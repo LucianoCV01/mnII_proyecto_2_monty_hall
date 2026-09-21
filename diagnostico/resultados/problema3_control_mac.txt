@@ -1,0 +1,4 @@
+[CHECK] rand_r() compilo y corrio correctamente.
+[CHECK] Valor generado de ejemplo: 825814169
+[CHECK] Conclusion: el toolchain de esta maquina SI provee rand_r.
+[CHECK] Problema #3 (Bitacora): NO se reproduce aqui.

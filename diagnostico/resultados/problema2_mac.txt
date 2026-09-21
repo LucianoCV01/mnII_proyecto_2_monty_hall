@@ -1,0 +1,13 @@
+[DEBUG] Argumento recibido: "1000" | N parseado: 1000
+[DEBUG][Problema #2] rank 0 -> suma simple (NO USADA): 1790023496 | hash multiplicativo (USADA): 1790023496
+[DEBUG][Problema #2] rank 2 -> suma simple (NO USADA): 1790023498 | hash multiplicativo (USADA): 2803927722
+[DEBUG][Problema #2] rank 1 -> suma simple (NO USADA): 1790023497 | hash multiplicativo (USADA): 149491961
+[DEBUG][Problema #2] rank 3 -> suma simple (NO USADA): 1790023499 | hash multiplicativo (USADA): 1163396187
+
+--- VERSION 2 (Problema #2 corregido) ---
+Simulaciones (N): 1000
+Victorias Cambiando: 658
+Prob. Empirica: 0.658000 | Prob. Teorica: 0.666667
+Tiempo total: 0.000048 seg con 4 procesos
+
+4,0.000048,1000,658,0.658000,0.666667

@@ -1,0 +1,101 @@
+# =========================================================
+# .gitignore para proyecto C / MPI
+# =========================================================
+
+# --- Binarios y ejecutables ---
+diagnostico/bin/
+bin/
+build/
+out/
+Debug/
+Release/
+*.exe
+*.out
+a.out
+*.app
+
+# --- Objetos y librerías compiladas ---
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.la
+*.lai
+
+# --- Dependencias generadas por el compilador ---
+*.d
+*.i
+*.ii
+*.gch
+*.pch
+
+# --- Debug / símbolos ---
+*.dSYM/
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.stackdump
+core
+core.*
+vgcore.*
+callgrind.out.*
+
+# --- Cobertura ---
+*.gcda
+*.gcno
+*.gcov
+*.lcov
+coverage/
+
+# --- CMake (solo lo generado) ---
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+
+# --- Autotools / configure (si usan) ---
+.deps/
+.libs/
+*.lo
+*.la
+
+# --- Editores / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# --- Sistema operativo ---
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*.bak
+
+# =========================================================
+# Resultados del diagnóstico
+# =========================================================
+# No se ignoran: los .txt de diagnostico/resultados/ se quieren
+# versionar para citarlos en la Bitácora.
+#
+# Si en algún momento deciden que son regenerables y NO quieren
+# subirlos, descomenten estas dos líneas:
+#
+# diagnostico/resultados/*.txt
+# !diagnostico/resultados/.gitkeep

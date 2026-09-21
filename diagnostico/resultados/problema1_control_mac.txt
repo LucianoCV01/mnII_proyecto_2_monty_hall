@@ -1,0 +1,60 @@
+===== PASO A: sanity check (N=1000000, P=1) =====
+[DEBUG] Argumento recibido: "1000000" | N parseado: 1000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 1000000
+Victorias Cambiando: 666831
+Prob. Empirica: 0.666831 | Prob. Teorica: 0.666667
+Tiempo total: 0.018434 seg con 1 procesos
+
+1,0.018434,1000000,666831,0.666831,0.666667
+
+===== PASO B: balanceo de carga (N=1000000, variando P) =====
+[DEBUG] Argumento recibido: "1000000" | N parseado: 1000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 1000000
+Victorias Cambiando: 667079
+Prob. Empirica: 0.667079 | Prob. Teorica: 0.666667
+Tiempo total: 0.009089 seg con 2 procesos
+
+2,0.009089,1000000,667079,0.667079,0.666667
+[DEBUG] Argumento recibido: "1000000" | N parseado: 1000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 1000000
+Victorias Cambiando: 666564
+Prob. Empirica: 0.666564 | Prob. Teorica: 0.666667
+Tiempo total: 0.004570 seg con 4 procesos
+
+4,0.004570,1000000,666564,0.666564,0.666667
+[DEBUG] Argumento recibido: "1000000" | N parseado: 1000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 1000000
+Victorias Cambiando: 666440
+Prob. Empirica: 0.666440 | Prob. Teorica: 0.666667
+Tiempo total: 0.005979 seg con 5 procesos
+
+5,0.005979,1000000,666440,0.666440,0.666667
+[DEBUG] Argumento recibido: "1000000" | N parseado: 1000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 1000000
+Victorias Cambiando: 665504
+Prob. Empirica: 0.665504 | Prob. Teorica: 0.666667
+Tiempo total: 0.004060 seg con 7 procesos
+
+7,0.004060,1000000,665504,0.665504,0.666667
+
+===== PASO D: corrida de CONTROL (N=2200000000, P=1) =====
+(puede tardar ~40 segundos)
+[DEBUG] Argumento recibido: "2200000000" | N parseado: 2200000000
+
+--- VERSION INGENUA (Base de Diagnostico) ---
+Simulaciones (N): 2200000000
+Victorias Cambiando: 1466579672
+Prob. Empirica: 0.666627 | Prob. Teorica: 0.666667
+Tiempo total: 37.669878 seg con 1 procesos
+
+1,37.669878,2200000000,1466579672,0.666627,0.666667
