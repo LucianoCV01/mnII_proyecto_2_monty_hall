@@ -1,0 +1,11 @@
+== Compilacion ==
+diagnostico/src/check_rand_r_toolchain.c: In function 'main':
+diagnostico/src/check_rand_r_toolchain.c:29:17: warning: implicit declaration of function 'rand_r' [-Wimplicit-function-declaration]
+     int valor = rand_r(&seed);
+                 ^~~~~~
+C:\Users\execo\AppData\Local\Temp\cckS18I9.o:check_rand_r_toolchain.c:(.text+0x26): undefined reference to `rand_r'
+collect2.exe: error: ld returned 1 exit status
+
+FALLO LA COMPILACION -- este es justamente el sintoma esperado
+si el toolchain no provee rand_r (Problema #3). Copiar este
+mensaje de error tal cual para sumarlo a la Bitacora.

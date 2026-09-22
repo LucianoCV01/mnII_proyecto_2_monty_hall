@@ -1,0 +1,2 @@
+ERROR: no se encontro mpicc. Instalar OpenMPI/MPICH, o correr
+este paso desde WSL en vez de Git Bash.
