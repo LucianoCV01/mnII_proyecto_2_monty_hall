@@ -56,6 +56,7 @@ Dado que el problema es "embarazosamente paralelo" (cada iteración es independi
 - **Balanceo de carga exacto:** reparto de base + resto entre procesos, evitando la pérdida silenciosa de iteraciones cuando $N$ no es múltiplo exacto de $P$ (Sección 5.1, Problema #4).
 - **Independencia entre streams de proceso:** hashing multiplicativo de la semilla con el rank (Sección 5.1, Problema #2).
 - **Portabilidad de tipos numéricos:** `int64_t` en vez de `long` (Sección 5.1, Problema #1) — con la salvedad de que su costo de rendimiento en el clúster se trata como hipótesis a verificar, no como un hecho (Sección 6.1).
+- **Portabilidad del generador aleatorio:** `rand()`/`srand()` en vez de `rand_r()` (Sección 5.1, Problema #3) — confirmado que `rand_r()` no compila en el toolchain de Windows del grupo; `rand()` es estándar de C y seguro en este diseño porque cada proceso MPI tiene memoria y estado global propios.
 - **Salida validada:** probabilidad empírica, probabilidad teórica y error absoluto calculados directamente en C.
 
 ### 4.1 Flujo de Ejecución del Simulador
@@ -92,7 +93,14 @@ La cátedra evalúa el proceso de diagnóstico tanto como el resultado. Esta sec
 | **Solución aplicada** | Reemplazo de `long` por `int64_t` (`<stdint.h>`) en todos los contadores, `atol` por `atoll`, y `%ld` por el macro `PRId64` (`<inttypes.h>`) en las impresiones. En MPI, `MPI_LONG` se reemplaza por `MPI_INT64_T`. |
 | **Cómo se verifica** | Protocolo de control cruzado: correr $N = 2.2\times10^9$, $P=1$ (aislando el balanceo de carga) en dos arquitecturas — Mac (control) y Windows (objetivo). |
 
-**Resultado real obtenido:** en Mac (arquitectura LP64, `long` de 64 bits), el valor parseado (2.200.000.000) coincidió exactamente con el tipeado, y la probabilidad convergió con normalidad — confirmando que en esta arquitectura el Problema #1 **no se manifiesta**, tal como predice la causa raíz. La corrida equivalente en la notebook Windows (Paso C) queda **pendiente**, a cargo del integrante del grupo con esa arquitectura; se documentará acá apenas esté disponible.
+**Resultado real obtenido — CONFIRMADO en ambas arquitecturas:**
+
+- **Mac (control, LP64):** el valor parseado (2.200.000.000) coincidió exactamente con el tipeado, y la probabilidad convergió con normalidad — el Problema #1 **no se manifiesta** en esta arquitectura, tal como predice la causa raíz (`diagnostico/resultados/problema1_control_mac.txt`).
+- **Windows (objetivo, LLP64):** se aisló la causa raíz con un chequeo mínimo sin MPI ni `rand_r` (`check_long_size.c`), evitando el bloqueo del Problema #3 en la misma máquina. Resultado: `sizeof(long) = 4 bytes (32 bits)` y `atol("2200000000") = -2094967296`.
+
+  Esta corrupción coincide **exactamente** con la aritmética de desbordamiento de complemento a dos esperada: $2.200.000.000 - 2^{32} = 2.200.000.000 - 4.294.967.296 = -2.094.967.296$. No es un valor corrupto al azar — es el resultado determinístico y predecible de interpretar como entero de 32 bits con signo un valor que solo cabe en 33 bits sin signo. Esto confirma la causa raíz documentada arriba con precisión matemática, no solo cualitativamente (`diagnostico/resultados/problema1_windows.txt`).
+
+Con ambas corridas, el Problema #1 queda **cerrado**: reproducido donde se predijo que fallaría, y confirmado como no aplicable donde se predijo que no fallaría.
 
 #### Problema #2: Correlación de semillas entre procesos (el "enemigo" de Monte Carlo)
 
@@ -104,7 +112,7 @@ La cátedra evalúa el proceso de diagnóstico tanto como el resultado. Esta sec
 | **Solución aplicada** | Hashing multiplicativo: la semilla de cada proceso se calcula como `seed_base + (id_proceso * CONSTANTE_PRIMA_GRANDE)`, usando una constante cercana a $2^{32}/\varphi$ (constante de Knuth), que dispersa semillas consecutivas en todo el espacio de 32 bits en vez de dejarlas contiguas. |
 | **Cómo se verifica** | Instrumentación con `-DDEBUG_SEEDS`: imprime, para cada rank, la semilla que habría dado la fórmula vieja junto a la que efectivamente usa la fórmula nueva. |
 
-**Resultado real obtenido:** con $P=4$, la fórmula vieja produjo semillas consecutivas (1789939527, 1789939528, 1789939529, 1789939530), mientras que el hashing multiplicativo las dispersó por todo el rango de 32 bits (1789939527, 149407992, 2803843753, 1163312218) — el rank 0 coincide en ambas fórmulas porque el desplazamiento es matemáticamente nulo ($0 \times \text{constante} = 0$), caso esperado. Se confirma la corrección a nivel de la semilla en sí, sin necesidad de que la probabilidad final agregada cambie de forma visible — para una tarea tan simple (comparar dos números al azar entre 0 y $M-1$), esa probabilidad no sería un indicador confiable de esta mejora en particular.
+**Resultado real obtenido:** con $P=4$, la fórmula vieja produjo semillas consecutivas (1789939527, 1789939528, 1789939529, 1789939530), mientras que el hashing multiplicativo las dispersó por todo el rango de 32 bits (1789939527, 149407992, 2803843753, 1163312218) — el rank 0 coincide en ambas fórmulas porque el desplazamiento es matemáticamente nulo ($0 \times \text{constante} = 0$), caso esperado. Se confirma la corrección a nivel de la semilla en sí, sin necesidad de que la probabilidad final agregada cambie de forma visible — para una tarea tan simple (comparar dos números al azar entre 0 y $M-1$), esa probabilidad no sería un indicador confiable de esta mejora en particular (`diagnostico/resultados/problema2_mac.txt`).
 
 #### Problema #3: Portabilidad de `rand_r` entre toolchains
 
@@ -113,10 +121,18 @@ La cátedra evalúa el proceso de diagnóstico tanto como el resultado. Esta sec
 | **Síntoma esperado** | Error de compilación (`undefined reference` o `implicit declaration`) si el toolchain de gcc usado en la notebook Windows no provee `rand_r`, ya que es una función POSIX/BSD, no parte del estándar C ni siempre incluida en runtimes de Windows. |
 | **Causa raíz** | `rand_r` depende de la biblioteca de tiempo de ejecución (libc) del sistema, no del compilador en sí — dos instalaciones de gcc en el mismo sistema operativo pueden diferir en esto según el runtime que usen por detrás. |
 | **Cómo se detectó** | Anticipado durante la revisión de portabilidad multiplataforma, antes de intentar compilar en Windows. |
-| **Solución aplicada** | Paso de verificación de toolchain (Sección 7): compilar un programa mínimo (`check_rand_r_toolchain.c`) que solo llama a `rand_r`, sin MPI, antes de invertir tiempo en el experimento completo. Si falla en Windows, la alternativa es correr esa parte sobre WSL. |
+| **Solución aplicada** | Confirmada la falla real (ver abajo), se decide **migrar de `rand_r()` a `rand()`/`srand()`** en la versión final, en vez de trabajar alrededor del problema con WSL. Es una función 100% estándar de C, disponible en cualquier toolchain, y en este diseño es igualmente segura: cada proceso MPI tiene su propia memoria y su propio estado global — no hay hilos compartiendo el generador, como sí habría que cuidar con OpenMP. Esto resuelve el Problema #3 de raíz para las tres arquitecturas, en vez de dejarlo condicionado a usar WSL únicamente en Windows. |
 | **Cómo se verifica** | Ejecutar `check_rand_r_toolchain.c` en la notebook Windows y registrar si compila o no, y con qué mensaje de error en caso de falla. |
 
-**Resultado real obtenido:** pendiente, a cargo del mismo integrante del grupo que completará el Problema #1.
+**Resultado real obtenido — CONFIRMADO:** la compilación en la notebook Windows falló exactamente con el síntoma predicho:
+
+```
+check_rand_r_toolchain.c:29:17: warning: implicit declaration of function 'rand_r'
+undefined reference to `rand_r'
+collect2.exe: error: ld returned 1 exit status
+```
+
+(`diagnostico/resultados/problema3_windows.txt`). El toolchain identificado (MinGW-w64 vía Git Bash, a juzgar por `collect2.exe` y la ruta de archivos temporales de Windows) efectivamente no provee `rand_r`. La corrida de control en Mac (`diagnostico/resultados/problema3_control_mac.txt`) confirma que ahí sí está disponible — contraste que valida la causa raíz (dependencia de la libc del sistema, no del compilador).
 
 #### Problema #4: Balanceo de Carga sin Reparto de Resto
 
@@ -138,7 +154,7 @@ La cátedra evalúa el proceso de diagnóstico tanto como el resultado. Esta sec
 | 10.000.000 | 8 | 10.000.000 | 10.000.000 | 0 |
 | 2.200.000.000 | 3 | 2.199.999.999 | 2.200.000.000 | 1 |
 
-Se incluyó a propósito el caso $N=10.000.000$, $P=8$, donde $N$ es múltiplo exacto de $P$: ahí no hay pérdida, confirmando que el bug depende exclusivamente del resto de la división y no aparece siempre. Para los tamaños de $N$ usados en el experimento real, la pérdida máxima posible es de $P-1$ simulaciones — estadísticamente insignificante frente a $N$ grande, pero corregirlo es una cuestión de exactitud algorítmica, no solo de impacto estadístico.
+Se incluyó a propósito el caso $N=10.000.000$, $P=8$, donde $N$ es múltiplo exacto de $P$: ahí no hay pérdida, confirmando que el bug depende exclusivamente del resto de la división y no aparece siempre. Para los tamaños de $N$ usados en el experimento real, la pérdida máxima posible es de $P-1$ simulaciones — estadísticamente insignificante frente a $N$ grande, pero corregirlo es una cuestión de exactitud algorítmica, no solo de impacto estadístico (`diagnostico/resultados/problema4_mac.txt`).
 
 ### 5.2 Decisiones de Diseño Justificadas
 
@@ -168,11 +184,20 @@ $$SE = \sqrt{\frac{p(1-p)}{N}} \approx \sqrt{\frac{0{,}2222}{N}}$$
 
 **Muestreo base ($N=10^6$, 5 corridas):** el error absoluto promedio observado fue $0{,}000560$. Para una distribución aproximadamente normal de desvío $SE$, el valor esperado del error absoluto es $SE \cdot \sqrt{2/\pi} \approx 0{,}000376$. El valor observado es algo mayor al esperado, pero con solo 5 muestras esa diferencia es perfectamente compatible con el azar — no hay evidencia de sesgo sistemático en esta escala.
 
-**Corrida de gran escala ($N=2{,}2\times10^9$, Paso D de control del Problema #1):** el error absoluto observado fue $0{,}0000408$, equivalente a $4{,}06$ veces el $SE$ teórico ($0{,}0000101$). Un desvío de más de $4\sigma$ tiene una probabilidad de ocurrir por azar de aproximadamente 1 en 16.000 — infrecuente, aunque no imposible en una sola corrida.
+**Corridas de gran escala ($N=2{,}2\times10^9$, dos ejecuciones independientes del Paso D de control del Problema #1):**
 
-**Hallazgo abierto, no concluyente:** esta corrida se realizó con `monty_hall_v1_naive.c`, que en ese momento todavía usaba la semilla sin corregir (Problema #2). Con $P=1$ en esa corrida puntual no hay múltiples procesos combinándose, por lo que la hipótesis de correlación entre procesos (Salmon et al., 2011) no aplica directamente a este caso — pero tampoco corresponde descartarla sin más evidencia. **Próximo paso sugerido, no bloqueante:** repetir esta misma corrida con la versión final (semilla corregida e `int64_t`) un par de veces más, para confirmar si el error vuelve al rango esperable o si se mantiene sistemáticamente alto.
+| Corrida | Error absoluto | Error / $SE$ teórico ($0{,}0000101$) |
+|---|---|---|
+| 1ra ejecución | $0{,}0000408$ | $4{,}06$ |
+| 2da ejecución | $0{,}0000397$ | $3{,}93$ |
 
-**Conclusión:** los datos propios confirman la tendencia general de $O(1/\sqrt{N})$ — al aumentar $N$ en un factor ~2200, el error se redujo en un orden de magnitud comparable a $\sqrt{2200}\approx47$. La única observación que amerita seguimiento es el error puntualmente alto de la corrida de $2{,}2\times10^9$, documentado arriba como hallazgo abierto.
+Un desvío de más de $4\sigma$ tiene una probabilidad de ocurrir por azar de aproximadamente 1 en 16.000 — infrecuente, pero no imposible en una corrida aislada. Que se repita dos veces, en ejecuciones independientes, con una magnitud tan similar, ya deja de ser explicable como pura casualidad (la probabilidad de que ambas superen los $3{,}9\sigma$ por azar es muchísimo menor que la de una sola).
+
+**Hipótesis revisada:** la hipótesis original (correlación entre procesos, Sección 5.1 Problema #2) **se descarta explícitamente** para este caso: ambas corridas usan $P=1$, y con un único proceso no hay otro proceso con el cual correlacionar — el mecanismo del Problema #2 no puede operar acá. La hipótesis más específica y consistente con la evidencia es otra: `rand_r()` de glibc es, en el fondo, un generador congruencial con estado de 32 bits (período del orden de $2^{32}$), y esta corrida puntual lo llama miles de millones de veces ($N=2{,}2\times10^9$ iteraciones × 2 llamadas cada una $\approx 4{,}4\times10^9$ llamadas totales). Es matemáticamente plausible que la secuencia interna empiece a repetirse parcialmente dentro de una misma corrida, reduciendo la cantidad de muestras verdaderamente independientes por debajo de lo que asume la fórmula de $SE$ usada. No se cuenta con el valor exacto del período de esta implementación puntual como para confirmarlo con certeza — requeriría un test aislado (sembrar el generador y contar cuántas llamadas hacen falta para que la salida se repita), que queda como verificación opcional, no bloqueante.
+
+**Por qué esto no amenaza el experimento real:** este artefacto solo es relevante al forzar un $N$ extremo en un único proceso, específicamente para poder diagnosticar el Problema #1. En el escalado fuerte real, cada proceso maneja $N/P$ — del orden de millones, no miles de millones — muy por debajo de cualquier límite de período del generador. No hay razón para esperar que este efecto contamine las mediciones de speedup del experimento final.
+
+**Conclusión:** los datos propios confirman la tendencia general de $O(1/\sqrt{N})$ — al aumentar $N$ en un factor ~2200, el error se redujo en un orden de magnitud comparable a $\sqrt{2200}\approx47$. La observación de un error sistemáticamente elevado en $N=2{,}2\times10^9$, reproducida en dos corridas independientes, queda documentada como hallazgo abierto con una hipótesis específica (agotamiento del período del generador), en vez de la hipótesis de correlación entre procesos, descartada por no aplicar a un caso de $P=1$.
 
 ## 6. Plan de Pruebas y Hardware
 
@@ -205,7 +230,7 @@ Dado que el volumen de datos grande se va a correr específicamente en el clúst
 
 ## 7. Verificación de Toolchain
 
-Antes de lanzar las corridas de medición, se compilará y ejecutará un programa mínimo en cada sistema que solo llame a `rand_r` (Problema #3, Sección 5.1), para confirmar que el toolchain de gcc de esa máquina lo soporta sin errores de enlazado. Si falla en la notebook Windows, la alternativa es correr esa parte del experimento sobre WSL.
+Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `rand_r` (Problema #3, Sección 5.1), para confirmar si el toolchain de gcc de esa máquina lo soporta sin errores de enlazado. **Resultado:** falla en la notebook Windows (MinGW-w64 vía Git Bash), funciona en Mac. En vez de resolverlo con un cambio de entorno (WSL) solo para la notebook Windows, se decidió **migrar el simulador de `rand_r()` a `rand()`/`srand()`** en la versión final (ver Problema #3, Sección 5.1) — una solución de código, portable a las tres arquitecturas por igual, en vez de una dependencia de entorno que solo resuelve el síntoma en una de ellas.
 
 ## 8. Metodología de Medición y Validación Estadística
 
@@ -218,7 +243,7 @@ Antes de lanzar las corridas de medición, se compilará y ejecutará un program
 ## 9. Limitaciones Identificadas
 
 - **Error estadístico del método de Monte Carlo:** converge con error de orden $O(1/\sqrt{N})$ — caracterizado con datos propios en la Sección 5.3.
-- **Generador de números aleatorios:** correlación entre semillas mitigada, no eliminada por completo (Problema #2, Sección 5.1).
+- **Generador de números aleatorios:** correlación entre semillas mitigada, no eliminada por completo (Problema #2, Sección 5.1); además, se observó (Sección 5.3) un posible agotamiento del período del generador en corridas de $N$ extremo con un solo proceso — no relevante para el experimento real, donde $N/P$ por proceso es órdenes de magnitud menor.
 - **Sesgo de módulo:** despreciable para los valores de $M$ usados.
 - **Comparación de tiempos entre arquitecturas:** solo tiene sentido comparar la forma de la curva de speedup por sistema, no los tiempos absolutos entre sistemas distintos.
 - **Costo de rendimiento de `int64_t` en el clúster:** tratado como hipótesis pendiente de verificación empírica (Sección 6.1), no como un hecho asumido.
@@ -226,21 +251,28 @@ Antes de lanzar las corridas de medición, se compilará y ejecutará un program
 
 ## 10. Próximos Pasos (orden de prioridad, por etapas)
 
+**Etapa de diagnóstico — cerrada:**
+
 1. ✅ Consultar con la cátedra los puntos pendientes de la Sección 12.
-2. ✅ Preparar la verificación de toolchain (Sección 7) — ejecución en Windows pendiente (Problema #3).
+2. ✅ Verificación de toolchain (Sección 7) — falla confirmada en Windows, `rand_r` no disponible.
 3. ✅ Implementar la versión ingenua del simulador (`monty_hall_v1_naive.c`).
-4. ⏳ Reproducir el Problema #1 (overflow) en la notebook Windows — pendiente, a cargo del compañero de grupo.
-5. ✅ Corregir y observar el Problema #2 (semillas) en `monty_hall_v2_seed_fix.c`; el Problema #1 se integra a la versión final recién cuando se confirme el punto 4.
+4. ✅ Reproducir el Problema #1 (overflow) en la notebook Windows — confirmado con `check_long_size.c`.
+5. ✅ Corregir y observar el Problema #2 (semillas) en `monty_hall_v2_seed_fix.c`.
 6. ✅ Diagnosticar y corregir el Problema #4 (balanceo de carga), con `demo_balanceo_carga.c`.
-7. ✅ Verificar a mano, con $N$ chico, que el resultado sea consistente con $M=3 \Rightarrow p \approx 2/3$.
-8. Escribir el script de automatización en bash para ejecutar el programa 10 veces (mínimo) por configuración de $P$.
-9. Ejecutar el escalado fuerte en Mac M1 y notebook Windows; sumar el clúster en cuanto la cátedra confirme el acceso.
-10. En el clúster, correr el experimento de la Sección 6.1 (`int64_t` vs. tipo nativo) antes de dar por cerrada la versión final del código.
-11. **Fase 2 (según lo confirmado en la Sección 12):** correr el barrido de $M$ (3, 5, 10, 50).
-12. Escribir el notebook de Python: medianas, speedup por sistema, comparación empírico vs. teórico.
-13. Redactar conclusiones y recomendaciones de mejora, incluyendo lo aprendido en la Bitácora de Diagnóstico.
-14. Subir código (incluyendo la versión ingenua junto a la corregida, como evidencia del proceso), datos, gráficos y README al repositorio.
-15. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
+7. ✅ Confirmar la falla del Problema #3 (`rand_r`) en Windows y decidir la migración a `rand()`/`srand()`.
+8. ✅ Verificar a mano, con $N$ chico, que el resultado sea consistente con $M=3 \Rightarrow p \approx 2/3$.
+
+**Etapa de versión final y experimento — a partir del acceso al clúster:**
+
+9. Integrar en un único código final las cuatro correcciones: `int64_t`, hashing multiplicativo de semilla, `rand()`/`srand()` en vez de `rand_r()`, y balanceo de carga con resto (ya presente desde la versión ingenua).
+10. Escribir el script de automatización en bash para ejecutar el programa 10 veces (mínimo) por configuración de $P$.
+11. Ejecutar el escalado fuerte en Mac M1, notebook Windows y clúster.
+12. En el clúster, correr el experimento de la Sección 6.1 (`int64_t` vs. tipo nativo) antes de dar por cerrada la versión final del código.
+13. **Fase 2 (según lo confirmado en la Sección 12):** correr el barrido de $M$ (3, 5, 10, 50).
+14. Escribir el notebook de Python: medianas, speedup por sistema, comparación empírico vs. teórico.
+15. Redactar conclusiones y recomendaciones de mejora, incluyendo lo aprendido en la Bitácora de Diagnóstico.
+16. Subir código (incluyendo la versión ingenua junto a la corregida, como evidencia del proceso), datos, gráficos y README al repositorio.
+17. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
 
 ## 11. Bibliografía
 

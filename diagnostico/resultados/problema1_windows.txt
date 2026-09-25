@@ -1,2 +1,4 @@
-ERROR: no se encontro mpicc. Instalar OpenMPI/MPICH, o correr
-este paso desde WSL en vez de Git Bash.
+sizeof(long) en este sistema: 4 bytes (32 bits)
+atol("2200000000") = -2094967296
+[RESULTADO] long es de 32 bits (o menos) en este sistema.
+[RESULTADO] Problema #1 esperable: N > 2147483647 se corrompe.
