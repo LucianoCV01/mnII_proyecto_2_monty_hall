@@ -1,18 +1,22 @@
 # Plan de Desarrollo: Proyecto 2 - Monty Hall (HPC)
 
+> **Última actualización:** 29/09/2026. Cambios principales: Fase 2 confirmada, alcance reducido a Mac M1 + clúster, generador propio (`splitmix64`) y nuevos Problemas #5 y #6. Ver Sección 13 (Registro de cambios). Lo marcado **[PENDIENTE]** se completa tras la corrida final (v2).
+
 ## 1. Descripción General y Objetivos
 
 El objetivo central del proyecto es utilizar la simulación masiva de eventos (método empírico de Monte Carlo) para verificar la frecuencia relativa de los resultados de la Paradoja de Monty Hall y validarlos contra la teoría probabilística. Se debe simular el concurso de puertas, evaluando el dilema matemático de si conviene mantener la elección inicial o cambiar de puerta luego de que el presentador abre una o más puertas incorrectas.
 
 **Enfoque en dos fases:**
 - **Fase 1 (obligatoria):** implementar y validar completamente el caso clásico de 3 puertas — es el foco principal exigido por la consigna.
-- **Fase 2 (valor agregado, sujeto a confirmación con la cátedra — ver Sección 12):** generalizar a $M$ puertas, para enriquecer la validación estadística y demostrar la comprensión matemática del problema (Sección 2).
+- **Fase 2 (obligatoria, confirmada por la cátedra — ver Sección 12):** generalizar a $M$ puertas ($M = 3, 5, 10, 50$) y validar la frecuencia empírica contra la teoría $(M-1)/M$ para cada valor de $M$ (Sección 2).
 
 **Sobre el proceso de desarrollo:** la cátedra evalúa explícitamente cómo se diagnostican y resuelven problemas de HPC, no solo la corrección del resultado final. Por eso el desarrollo se plantea deliberadamente por etapas: primero una versión simple del simulador, luego el registro honesto de los problemas reales que aparezcan (o que ya se anticiparon durante el diseño, ver Sección 5), y recién después las versiones corregidas — dejando esa evolución documentada en el repositorio en vez de entregar solo la versión final "prolija".
 
+**Alcance de plataformas (actualizado):** los experimentos se realizan en **Mac M1** y en el **clúster de la Facultad**. La notebook Windows quedó fuera del alcance por razones logísticas del grupo; la evidencia de diagnóstico ya obtenida en ella (Problemas #1 y #3) se conserva en la bitácora, pero ya no condiciona el diseño del código final.
+
 **Limitaciones que se reconocen de antemano** (ampliadas en la Sección 9):
 - El método de Monte Carlo da una estimación con error estadístico de orden $O(1/\sqrt{N})$; no es un resultado exacto sino asintótico.
-- La calidad del generador de números pseudoaleatorios utilizado condiciona la validez estadística de las simulaciones a gran escala.
+- La calidad del generador de números pseudoaleatorios utilizado condiciona la validez estadística de las simulaciones a gran escala. Esto dejó de ser una limitación teórica: se **confirmó** con datos propios (Problema #5, Sección 5.1) y motivó el reemplazo de `rand()` por un generador propio.
 - El modelo generalizado a $M$ puertas depende de una regla específica sobre el comportamiento del presentador, que se explicita en la Sección 2.
 
 ## 2. Fundamento Matemático y Probabilístico del Problema
@@ -37,7 +41,16 @@ Bajo el supuesto de que el presentador abre **todas las puertas incorrectas exce
 
 $$P(\text{ganar cambiando}) = \frac{M-1}{M} \qquad P(\text{ganar manteniendo}) = \frac{1}{M}$$
 
-**Nota sobre variantes:** existe una variante alternativa en la que el presentador abre **una sola** puerta incorrecta sin importar cuántas puertas totales haya $M$. Da una fórmula distinta y **no es la implementada en este proyecto**; queda documentada para evitar ambigüedad en la defensa oral (Lowery 2022, IB Maths Resources 2023). Tanto el alcance de la generalización como esta variante quedan sujetos a lo que confirme la cátedra (Sección 12).
+**Nota sobre variantes:** existe una variante alternativa en la que el presentador abre **una sola** puerta incorrecta sin importar cuántas puertas totales haya $M$. Da una fórmula distinta y **no es la implementada en este proyecto**; queda documentada para evitar ambigüedad en la defensa oral (Lowery 2022, IB Maths Resources 2023). La generalización a $M$ puertas está confirmada (Sección 12); esta variante alternativa sigue fuera de alcance salvo indicación contraria de la cátedra.
+
+**Valores teóricos y error esperado (Fase 2).** El criterio del simulador (`eleccion != premio` equivale a ganar cambiando) es válido para cualquier $M$ bajo el supuesto anterior, por lo que la Fase 2 **no requiere cambios en el núcleo**: solo se varía el parámetro $M$. Error estándar $SE=\sqrt{p(1-p)/N}$ con $N=10^9$:
+
+| $M$ | $P(\text{cambiar})$ | $P(\text{mantener})$ | $SE$ ($N=10^9$) |
+|---|---|---|---|
+| 3 | 2/3 ≈ 0,6667 | 1/3 | $1{,}49\times10^{-5}$ |
+| 5 | 4/5 = 0,8000 | 1/5 | $1{,}26\times10^{-5}$ |
+| 10 | 9/10 = 0,9000 | 1/10 | $9{,}5\times10^{-6}$ |
+| 50 | 49/50 = 0,9800 | 1/50 | $4{,}4\times10^{-6}$ |
 
 ## 3. Arquitectura de la Solución
 
@@ -52,26 +65,26 @@ Dado que el problema es "embarazosamente paralelo" (cada iteración es independi
 
 - **Flexibilidad (Parametrización):** número de simulaciones ($N$), cantidad de puertas ($M$) y semilla base opcional se ingresan mediante argumentos de línea de comandos.
 - **Estructura de Datos (Datos Sintéticos):** generados al vuelo en memoria local de cada proceso, sin I/O a disco.
-- **Reproducibilidad:** sin semilla especificada se usa la hora del sistema; con semilla fija se puede reproducir exactamente una corrida para depurar.
+- **Reproducibilidad:** con semilla explícita (`argv[3]`) una corrida se reproduce exactamente. Sin semilla, el rank 0 genera una de 64 bits a partir de la hora en nanosegundos y la difunde con `MPI_Bcast`; **la semilla se registra en el CSV** (columna `semilla`), de modo que toda corrida es reproducible a posteriori (Problema #6).
 - **Balanceo de carga exacto:** reparto de base + resto entre procesos, evitando la pérdida silenciosa de iteraciones cuando $N$ no es múltiplo exacto de $P$ (Sección 5.1, Problema #4).
-- **Independencia entre streams de proceso:** hashing multiplicativo de la semilla con el rank (Sección 5.1, Problema #2).
-- **Portabilidad de tipos numéricos:** `int64_t` en vez de `long` (Sección 5.1, Problema #1) — con la salvedad de que su costo de rendimiento en el clúster se trata como hipótesis a verificar, no como un hecho (Sección 6.1).
-- **Portabilidad del generador aleatorio:** `rand()`/`srand()` en vez de `rand_r()` (Sección 5.1, Problema #3) — confirmado que `rand_r()` no compila en el toolchain de Windows del grupo; `rand()` es estándar de C y seguro en este diseño porque cada proceso MPI tiene memoria y estado global propios.
+- **Independencia entre streams de proceso:** el estado inicial de cada rank se deriva mezclando la semilla base con el rank y pasándola por `splitmix64` (Problema #2, con la nota posterior). Con período $2^{64}$ el solapamiento entre streams es despreciable.
+- **Tipos numéricos:** `int64_t` para los contadores (Problema #1). Se mantiene por ser gratuito: en los dos entornos finales (LP64) es el mismo tipo nativo de 64 bits, por lo que se descartó el experimento de costo (Sección 6.1).
+- **Generador aleatorio propio:** `splitmix64` (período $2^{64}$), con `% M` sobre 64 bits (sesgo por módulo ≈ $5\times10^{-20}$), en vez de `rand()`/`srand()` de la libc. Motivo: `rand() % 3` sobre el generador de macOS tiene un sesgo sistemático de $-4\times10^{-5}$ (Problema #5). Da además exactamente los mismos resultados en Mac y clúster, sin depender de la libc de cada sistema.
 - **Salida validada:** probabilidad empírica, probabilidad teórica y error absoluto calculados directamente en C.
 
 ### 4.1 Flujo de Ejecución del Simulador
 
 1. **Inicialización de MPI:** cada proceso obtiene su rank y el tamaño del grupo (modelo SPMD).
-2. **Lectura de parámetros:** cada proceso lee los mismos `argv` ($N$, $M$, semilla opcional).
+2. **Lectura de parámetros y semilla:** cada proceso lee los mismos `argv` ($N$, $M$, semilla opcional). El rank 0 genera la semilla base si no se indicó una y la difunde (`MPI_Bcast`, fuera de la zona medida).
 3. **Balanceo de carga:** división entera más resto ($\lfloor N/P \rfloor$ por proceso, resto distribuido entre los primeros procesos).
 4. **Sincronización previa a la medición:** barrera antes de arrancar el cronómetro.
 5. **Cómputo local:** cada proceso sortea, para cada simulación local, la puerta premiada y la elegida; compara ambas para determinar victoria "cambiando" o "manteniendo".
 6. **Reducción colectiva:** suma de los contadores locales de ambos tipos de victoria hacia el proceso raíz.
-7. **Sincronización y cierre de medición:** segunda barrera, luego se detiene el cronómetro.
+7. **Cierre de medición:** se detiene el cronómetro tras la reducción, sin barrera adicional (justificación en la Sección 5.2).
 8. **Validación contra la teoría y exportación:** el proceso raíz calcula probabilidad empírica, teórica y error absoluto, y exporta una línea de resultados al CSV.
 9. **Finalización:** cierre del entorno de MPI.
 
-Solo hay comunicación en los pasos 4, 6 y 7 (dos barreras y una reducción de un valor), por lo que se espera overhead de comunicación marginal incluso a medida que crece $P$.
+Solo hay comunicación en el paso 2 (difusión de la semilla, fuera de la medición), el paso 4 (una barrera) y el paso 6 (dos `MPI_Reduce` de un valor cada una), por lo que se espera overhead de comunicación marginal incluso a medida que crece $P$.
 
 ## 5. Bitácora de Diagnóstico y Decisiones de Diseño
 
@@ -102,6 +115,8 @@ La cátedra evalúa el proceso de diagnóstico tanto como el resultado. Esta sec
 
 Con ambas corridas, el Problema #1 queda **cerrado**: reproducido donde se predijo que fallaría, y confirmado como no aplicable donde se predijo que no fallaría.
 
+**Estado final (alcance reducido):** al quedar Windows fuera del alcance, este problema no puede manifestarse en los dos entornos finales (Mac y clúster, ambos LP64). Se conserva `int64_t` porque no tiene costo (es el mismo tipo nativo de 64 bits) y se conserva la evidencia como parte del proceso de diagnóstico.
+
 #### Problema #2: Correlación de semillas entre procesos (el "enemigo" de Monte Carlo)
 
 | Campo | Detalle |
@@ -115,6 +130,8 @@ Con ambas corridas, el Problema #1 queda **cerrado**: reproducido donde se predi
 **Resultado real obtenido:** con $P=4$, la fórmula vieja produjo semillas consecutivas (1789939527, 1789939528, 1789939529, 1789939530), mientras que el hashing multiplicativo las dispersó por todo el rango de 32 bits (1789939527, 149407992, 2803843753, 1163312218) — el rank 0 coincide en ambas fórmulas porque el desplazamiento es matemáticamente nulo ($0 \times \text{constante} = 0$), caso esperado. Se confirma la corrección a nivel de la semilla en sí, sin necesidad de que la probabilidad final agregada cambie de forma visible — para una tarea tan simple (comparar dos números al azar entre 0 y $M-1$), esa probabilidad no sería un indicador confiable de esta mejora en particular (`diagnostico/resultados/problema2_mac.txt`).
 
 #### Problema #3: Portabilidad de `rand_r` entre toolchains
+
+> **Estado final:** superado. La causa (falta de `rand_r` en MinGW-w64/Windows) ya no aplica al alcance final, y la migración a `rand()` fue reemplazada a su vez por un generador propio (Problema #5). Se conserva como registro del diagnóstico.
 
 | Campo | Detalle |
 |---|---|
@@ -133,6 +150,8 @@ collect2.exe: error: ld returned 1 exit status
 ```
 
 (`diagnostico/resultados/problema3_windows.txt`). El toolchain identificado (MinGW-w64 vía Git Bash, a juzgar por `collect2.exe` y la ruta de archivos temporales de Windows) efectivamente no provee `rand_r`. La corrida de control en Mac (`diagnostico/resultados/problema3_control_mac.txt`) confirma que ahí sí está disponible — contraste que valida la causa raíz (dependencia de la libc del sistema, no del compilador).
+
+**Nota posterior (Problemas #2 y #5):** el hashing de 32 bits fue diseñado para `rand_r`/`rand()`. Con ese generador todos los procesos recorren un único ciclo de $2^{31}-2$ valores y el hash solo mueve el punto de partida; con $N=10^9$ (93 % del ciclo) los streams de distintos ranks se solapan (≈1,3 a 1,5 llamadas por valor distinto para $P \ge 2$, por cobertura esperada con arranques aleatorios). En la versión final cada rank deriva su estado de 64 bits con `splitmix64` y el solapamiento deja de ser un riesgo práctico.
 
 #### Problema #4: Balanceo de Carga sin Reparto de Resto
 
@@ -156,6 +175,39 @@ collect2.exe: error: ld returned 1 exit status
 
 Se incluyó a propósito el caso $N=10.000.000$, $P=8$, donde $N$ es múltiplo exacto de $P$: ahí no hay pérdida, confirmando que el bug depende exclusivamente del resto de la división y no aparece siempre. Para los tamaños de $N$ usados en el experimento real, la pérdida máxima posible es de $P-1$ simulaciones — estadísticamente insignificante frente a $N$ grande, pero corregirlo es una cuestión de exactitud algorítmica, no solo de impacto estadístico (`diagnostico/resultados/problema4_mac.txt`).
 
+#### Problema #5: Sesgo sistemático de `rand() % puertas` (generador Park-Miller)
+
+| Campo | Detalle |
+|---|---|
+| **Síntoma** | Con $N \ge 10^8$ el error absoluto deja de seguir $O(1/\sqrt{N})$ y se estanca en ≈ $4\times10^{-5}$. El error firmado es negativo en casi todas las corridas (con $N=10^9$: 100 de 100) y su media no depende de $P$. |
+| **Causa raíz** | `rand()` de macOS es Park-Miller: $x' = 16807\,x \bmod (2^{31}-1)$. Escribiendo $x' = 16807\,x - k\,m$ con $k=\lfloor 16807\,x/m \rfloor \in [0,16806]$ y usando $16807\equiv 1$, $m\equiv 1 \pmod 3$, resulta $x'\equiv x-k \pmod 3$. Con $M=3$, `premio` y `eleccion` (dos llamadas consecutivas) coinciden cuando $k\equiv 0 \pmod 3$: 5603 de 16807 valores de $k$, es decir $1/3+2/50421$. Por lo tanto $P(\text{cambiar}) = 2/3 - 2/(3\cdot16807) = 0{,}6666627$: un sesgo de $-3{,}97\times10^{-5}$, constante (no depende de $N$, $P$ ni de la semilla). El desplazamiento de $-1$ que aplica la libc BSD a la salida no altera la comparación de residuos. |
+| **Cómo se detectó** | Al analizar el CSV de la Mac (notebook): la mediana del error no bajaba de $\approx 4\times10^{-5}$ para $N=10^9$. Revisar el signo del error firmado por corrida mostró el sesgo, y la hipótesis anterior (agotamiento del período, Sección 5.3) quedó descartada. |
+| **Solución aplicada** | Generador propio `splitmix64` (período $2^{64}$) con `% M` sobre 64 bits. Ver Sección 4. |
+| **Cómo se verifica** | `diagnostico/harness_sesgo.c` (misma lógica del simulador, un proceso) con ≥ 8 semillas y $N=10^9$, comparando `do_rand` contra `splitmix64`; `diagnostico/ciclo_completo.c` para el recorrido exhaustivo del ciclo; y la corrida final v2 en Mac y clúster contra el CSV v1. |
+
+**Resultado real obtenido:**
+
+| Fuente ($N=10^9$, $M=3$) | Sesgo medio | Observación |
+|---|---|---|
+| Predicción analítica | $-3{,}97\times10^{-5}$ | $-2/(3\cdot16807)$ |
+| Recorrido del ciclo completo (pares consecutivos) | $-3{,}966\times10^{-5}$ | `ciclo_completo.c` |
+| CSV real v1, Mac (100 corridas, $P=1..8$) | $-4{,}06\times10^{-5}$ | 100 de 100 negativas, $t\approx-24$ |
+| Harness con `do_rand` (8 semillas) | $-4{,}14\times10^{-5}$ | 8 de 8 negativas, $t\approx-27$ |
+| Harness con `splitmix64` (8 semillas) | $+0{,}87\times10^{-5}$ | $t\approx+1{,}7$, compatible con 0 |
+| Corrida final v2 (Mac / clúster) | **[PENDIENTE]** | criterio: $\lvert t\rvert<2$ con ≥ 30 corridas |
+
+El sesgo también existe, mucho menor, para los otros valores de $M$ de la Fase 2 (recorrido del ciclo completo): $M=5$: $-4\times10^{-10}$; $M=10$: $-6{,}0\times10^{-6}$; $M=50$: $-1{,}2\times10^{-6}$. Es decir, el caso obligatorio $M=3$ era el más afectado. Salida guardada en `diagnostico/resultados/problema5_resultados.txt`. El CSV con el generador anterior se conserva como `resultados_mac_v1.csv` para documentar el antes y el después.
+
+#### Problema #6: Semillas repetidas entre repeticiones (`time(NULL)`)
+
+| Campo | Detalle |
+|---|---|
+| **Síntoma** | Las filas de una misma configuración $(N,P)$ a veces son idénticas. Resultados distintos sobre 80 filas por cada $N$: 15 ($10^5$), 16 ($10^6$), 19 ($10^7$), 47 ($10^8$), 80 ($10^9$). Las repeticiones cortas no aportan error independiente. |
+| **Causa raíz** | La semilla base se obtenía con `time(NULL)` (resolución de 1 s), llamado por separado en cada rank y sin registrarse en el CSV. Las corridas que caen en el mismo segundo repiten la semilla, y ninguna corrida era reproducible. |
+| **Cómo se detectó** | Análisis del CSV v1: cantidad de valores distintos de `victorias_cambiando` por celda $(N,P)$. |
+| **Solución aplicada** | El rank 0 genera una semilla de 64 bits desde `clock_gettime` (nanosegundos), la difunde con `MPI_Bcast` y se imprime como columna `semilla`. |
+| **Cómo se verifica** | En v2, cantidad de semillas distintas igual a la cantidad de filas: **[PENDIENTE]**. |
+
 ### 5.2 Decisiones de Diseño Justificadas
 
 Estas tres decisiones nunca partieron de una versión que fallara — se implementaron así desde el principio. Lo que corresponde documentar acá no es un diagnóstico, sino la justificación explícita de cada una.
@@ -175,6 +227,8 @@ Para consolidar los contadores locales de victorias en el proceso raíz, se desc
 #### Bandera de optimización del compilador: `-O2` en vez de `-O3`
 
 Se evaluó explícitamente si subir a `-O3` (que habilita además *loop unrolling* agresivo y *loop peeling*, según `gcc -Q --help=optimizers`) mejoraría el rendimiento del núcleo de la simulación, dado que se trata de un bucle numérico intensivo. Se midió directamente en vez de asumirlo: compilando el mismo bucle con `-O0`, `-O2` y `-O3`, el tiempo por iteración se mantuvo estable en las tres (~37-38 ns/iteración), sin diferencia significativa. La causa: el cuello de botella no es aritmética vectorizable, sino la llamada a `rand()` de la libc, que mantiene estado interno global y contiene ramas de control — el propio compilador reporta explícitamente `"couldn't vectorize loop: control flow in loop"` y `"statement clobbers memory: rand()"` al pedirle el detalle de vectorización (`-fopt-info-vec-all`). Ni `-O2` ni `-O3` pueden vectorizar ni desenrollar de forma útil una llamada a función opaca con efectos colaterales. Se mantiene `-O2` por ser el estándar razonable para este nivel de código, sin costo de rendimiento medible frente a `-O3` en este caso puntual.
+
+**Nota posterior (generador propio):** esta medición se hizo con `rand()`, una llamada opaca con estado global. Con `splitmix64` (inline, sin llamadas opacas) esa justificación ya no aplica textualmente, por lo que la comparación `-O2` vs. `-O3` debe repetirse con el código final: **[PENDIENTE]**. Además, **[REVISAR]** la cifra de ~37-38 ns/iteración difiere de los ≈14,3 ns/iteración que muestra el CSV v1 a $P=1$ ($N\ge10^7$); confirmar qué configuración produjo cada una antes de citarlas juntas.
 
 ### 5.3 Propiedades Caracterizadas Empíricamente
 
@@ -197,54 +251,60 @@ $$SE = \sqrt{\frac{p(1-p)}{N}} \approx \sqrt{\frac{0{,}2222}{N}}$$
 
 Un desvío de más de $4\sigma$ tiene una probabilidad de ocurrir por azar de aproximadamente 1 en 16.000 — infrecuente, pero no imposible en una corrida aislada. Que se repita dos veces, en ejecuciones independientes, con una magnitud tan similar, ya deja de ser explicable como pura casualidad (la probabilidad de que ambas superen los $3{,}9\sigma$ por azar es muchísimo menor que la de una sola).
 
-**Hipótesis revisada y CONFIRMADA por simulación:** la hipótesis original (correlación entre procesos, Sección 5.1 Problema #2) **se descarta explícitamente** para este caso: ambas corridas usan $P=1$, y con un único proceso no hay otro proceso con el cual correlacionar — el mecanismo del Problema #2 no puede operar acá. La hipótesis específica es el agotamiento del período del generador: `rand()`/`rand_r()` de la libc del sistema es, en el fondo, un generador congruencial con estado acotado, y esta corrida puntual lo llama miles de millones de veces ($N=2{,}2\times10^9$ iteraciones × 2 llamadas cada una $\approx 4{,}4\times10^9$ llamadas totales).
+**Hipótesis revisada (actualización del 29/09/2026):** la hipótesis de correlación entre procesos (Problema #2) se descarta explícitamente: ambas corridas usan $P=1$. La segunda hipótesis, agotamiento del período de `rand()` ($2^{31}-2$), también se **descarta** tras analizar el CSV completo de la Mac (Problema #5):
 
-Esto se verificó reimplementando el algoritmo `do_rand()` de la libc BSD/macOS (generador Park-Miller, período $2^{31}-2 \approx 2{,}147\times10^9$) y simulando exactamente el mismo experimento con distintos $N$:
+- el desvío aparece igual con $P=1,\dots,8$ (donde cada proceso consume una fracción mucho menor del período), y ya es visible con $N=10^8$ (≈9 % del período);
+- el error firmado tiene **siempre el mismo signo** y una media constante, lo que corresponde a un **sesgo**, no a ruido ni a agotamiento;
+- el valor de ese sesgo coincide con el calculado analíticamente: $-2/(3\cdot16807)=-3{,}97\times10^{-5}$.
 
-| $N$ | Llamadas totales | % del período | Error / $SE$ (simulado) | Error / $SE$ (real, Mac) |
-|---|---|---|---|---|
-| $10^8$ | $2\times10^8$ | ~9% | $1{,}5$ a $1{,}9$ | — |
-| $10^9$ | $2\times10^9$ | ~93% | $2{,}9$ a $3{,}3$ | — |
-| $2{,}2\times10^9$ | $4{,}4\times10^9$ | ~205% (dos vueltas) | $4{,}0$ a $4{,}2$ | $3{,}93$ y $4{,}06$ |
+Con un sesgo constante $b$, el cociente error/$SE$ crece como $\sqrt{N}$ (porque $SE$ baja y $b$ no):
 
-La simulación reproduce, con la misma magnitud, el desvío observado en las corridas reales — y muestra además que el efecto **crece de forma continua con la fracción del período consumida**, no aparece de golpe recién en $N=2{,}2\times10^9$. Esto confirma con un modelo concreto (no solo con sospecha teórica) que el período finito del generador de la libc es la causa del hallazgo, y motiva la recomendación de mejora de la Sección 10: evaluar un generador propio de período mayor (ej. `splitmix64`, período $2^{64}$) para la versión final, en vez de depender de `rand()`/`rand_r()` del sistema.
+| $N$ | $SE$ | $\lvert b\rvert/SE$ esperado | Observado |
+|---|---|---|---|
+| $10^8$ | $4{,}7\times10^{-5}$ | 0,84 | error firmado medio $-3{,}3\times10^{-5}$ (0,69 $SE$, CSV v1, 47 valores distintos) |
+| $10^9$ | $1{,}49\times10^{-5}$ | 2,66 | $-4{,}06\times10^{-5}$ (2,72 $SE$, CSV v1, 100 corridas) |
+| $2{,}2\times10^9$ | $1{,}0\times10^{-5}$ | 3,95 | 4,06 y 3,93 $SE$ (las dos corridas de diagnóstico de arriba) |
 
-**Por qué esto no amenaza el experimento real:** este artefacto solo es relevante al forzar un $N$ extremo en un único proceso, específicamente para poder diagnosticar el Problema #1. En el escalado fuerte real, cada proceso maneja $N/P$ — del orden de millones, no miles de millones — muy por debajo de cualquier límite de período del generador. No hay razón para esperar que este efecto contamine las mediciones de speedup del experimento final.
+La simulación de la versión anterior de este documento (que reimplementaba `do_rand()`) era correcta y por eso reproducía el fenómeno; lo que resultó incorrecto fue su interpretación: el crecimiento del error/$SE$ con $N$ **no** refleja la fracción del período consumida, sino el cociente entre un sesgo fijo y un $SE$ decreciente.
 
-**Conclusión:** los datos propios confirman la tendencia general de $O(1/\sqrt{N})$ — al aumentar $N$ en un factor ~2200, el error se redujo en un orden de magnitud comparable a $\sqrt{2200}\approx47$. El error sistemáticamente elevado en $N=2{,}2\times10^9$, reproducido en dos corridas independientes, queda **confirmado** (no solo hipotetizado) como agotamiento del período del generador de la libc del sistema, mediante simulación directa del algoritmo `do_rand()` — no como correlación entre procesos, hipótesis descartada por no aplicar a un caso de $P=1$.
+**Por qué esto sí afectaba al experimento real:** el sesgo no depende de $N/P$ ni del número de procesos, por lo que contaminaba todas las corridas con $N\ge10^8$ de la barrida completa, y no solo el caso extremo de $P=1$. La corrección (generador propio, Sección 4) se valida en la corrida v2.
+
+**Conclusión:** los datos propios confirman $O(1/\sqrt{N})$ mientras $SE$ sea mucho mayor que el sesgo (aprox. $N\lesssim10^8$). Más allá, con el generador anterior el error se estanca en ≈ $4\times10^{-5}$: efecto del sesgo del generador (Problema #5), no propiedad del método. Con el generador propio se espera que la curva siga $O(1/\sqrt{N})$ hasta $N=10^9$: **[PENDIENTE de confirmar con la corrida v2]**.
 
 ## 6. Plan de Pruebas y Hardware
 
 | Entorno | Arquitectura | Objetivo de la Prueba |
 |---|---|---|
 | Mac M1 | ARM (Heterogénea P-cores / E-cores) | Observar caídas de rendimiento al usar núcleos de eficiencia. |
-| Notebook Windows | x86 | Curva de speedup en arquitectura simétrica; además, entorno donde se reproduce el Problema #1 (Sección 5.1). |
-| Clúster de la Facultad | Nodos distribuidos | Medir el costo real de comunicación en red; entorno final donde correrán los experimentos de mayor escala. |
+| Clúster de la Facultad | Nodos distribuidos | Medir el costo real de comunicación en red; entorno donde correrán los experimentos de mayor escala. |
+
+La notebook Windows (x86) quedó fuera del alcance (Sección 1). No se realiza comparación con una arquitectura simétrica; la Ley de Amdahl se contrasta con la curva de cada uno de los dos entornos.
 
 > **Hipótesis arquitectónicas esperadas (a contrastar empíricamente):**
-> - **Mac M1 (ARM Heterogéneo):** se anticipa una caída de eficiencia o "efecto convoy" cuando $P$ supere la cantidad de núcleos de alto rendimiento (P-cores) y MPI comience a asignar carga a los núcleos de eficiencia (E-cores).
-> - **Notebook Windows (x86 Simétrico):** se espera una curva de escalado más regular, dictada por la Ley de Amdahl, sostenida por memoria compartida.
-> - **Clúster de la Facultad (Memoria Distribuida):** se espera que el overhead de red en las primitivas de comunicación de MPI se vuelva perceptible a medida que $P$ escale, a diferencia de los entornos locales.
+> - **Mac M1 (ARM Heterogéneo):** se anticipa una caída de eficiencia cuando $P$ supere la cantidad de núcleos de alto rendimiento (P-cores) y MPI comience a asignar carga a los núcleos de eficiencia (E-cores). *Resultado preliminar (v1):* eficiencia ≥ 0,93 hasta $P=4$ y caída en $P=5$ (0,58 a 0,79 en $P=8$ según $N$), compatible con la hipótesis; la causa exacta (desbalance vs. comunicación) no se aisló, porque no se miden tiempos por rank. El speedup se **recalcula con la versión final**, ya que el nuevo generador cambia $T_1$.
+> - **Clúster de la Facultad (Memoria Distribuida):** se espera que el overhead de red en las primitivas de comunicación de MPI se vuelva perceptible a medida que $P$ escale, a diferencia del entorno local.
 
-En los tres entornos se compilará y ejecutará con **gcc**, mismo código fuente y mismo `Makefile`. La cátedra explicará el mecanismo de acceso al clúster; hasta entonces se avanza con Mac M1 y notebook Windows.
+En los dos entornos se compilará y ejecutará con **gcc** (`mpicc -O2`), mismo código fuente. **[COMPLETAR]** Mecanismo de lanzamiento en el clúster (gestor de colas o `mpirun` directo), núcleos por nodo, cantidad de nodos disponibles y versión de MPI; `nproc` en el nodo de login no representa la asignación real.
 
 **Variables experimentales a barrer:**
 1. Número de procesos $P$ (escalado fuerte, variable principal).
 2. Tamaño del problema $N$ — ajustado empíricamente, sin valores fijos predefinidos.
-3. Cantidad de puertas $M$ (Fase 2, sujeta a confirmación — Sección 12): $M = 3, 5, 10, 50$.
+3. Cantidad de puertas $M$ (Fase 2, confirmada — Sección 12): $M = 3, 5, 10, 50$.
 
-### 6.1 Experimento adicional: ¿tiene costo real la portabilidad de tipos en el clúster?
+### 6.1 Experimento descartado: costo de `int64_t` en el clúster
 
-Dado que el volumen de datos grande se va a correr específicamente en el clúster, surge la duda de si `int64_t` introduce algún costo de rendimiento frente a usar el tipo nativo del sistema en esa arquitectura puntual. En vez de asumir una respuesta, se lo trata como una hipótesis a verificar con datos:
+Se había planteado comparar `int64_t` contra el tipo nativo en el clúster. Con el alcance reducido deja de tener sentido: en Linux de 64 bits (LP64) `int64_t` **es** `long`, y en macOS es `long long`, ambos de 64 bits, con el mismo código máquina. La necesidad de `int64_t` era exclusivamente de portabilidad hacia Windows. Se descarta el experimento y se mantiene una única versión del código.
 
-- **Hipótesis de partida:** en Linux de 64 bits (modelo LP64, el esperable en el clúster), `int64_t` y `long` son, en la práctica, el mismo tipo de 64 bits nativo de la CPU — por lo que no debería haber diferencia de rendimiento medible. La necesidad de `int64_t` es exclusivamente un tema de **portabilidad** hacia Windows, no de rendimiento en el clúster.
-- **Diseño del experimento:** compilar dos variantes del núcleo de simulación, idénticas salvo un `typedef` del tipo de los contadores (`int64_t` vs. el entero nativo de 64 bits del sistema), y correr el mismo $N$ grande con el mismo $P$ en el clúster, repitiendo las 10 corridas mínimas de la Sección 8 para cada variante, comparando las medianas de tiempo.
-- **Refinamiento adicional a probar:** dado que el contador local de cada proceso opera sobre $N/P$ (que con $P$ grande puede entrar cómodo en 32 bits, aunque $N$ total no), se probará también una variante que use un tipo de 32 bits solo para el acumulador local del bucle caliente, reservando 64 bits únicamente para el total global tras la reducción.
-- **Resultado esperado según la hipótesis:** si se confirma que no hay diferencia medible, se mantiene una única versión portable (`int64_t` en todos lados). Si aparece una diferencia real, se documenta el caso puntual y se justifica mantener una variante "cluster-only", dejando explícito el trade-off entre portabilidad y rendimiento.
+### 6.2 Diseño del barrido de $M$ (Fase 2)
+
+- Se ejecuta `run_experimento.sh` una vez por cada valor de $M$ (3, 5, 10, 50), con el mismo barrido de $N$ y $P$, acumulando todo en el mismo CSV (la columna `M` distingue los casos). En el clúster se puede acotar con la lista de $N$ y el paso de $P$ del script.
+- El objetivo de la Fase 2 es la **validación estadística** frente a $(M-1)/M$; el análisis de speedup se hace con $M=3$ (el costo por iteración no cambia con $M$).
+- Criterio de validación por $(N,M)$: $z=(\hat p-p)/SE$ por corrida; se espera media de $z$ compatible con 0 y ≈ 95 % de las corridas con $\lvert z\rvert<2$. Se grafica $\hat p$ vs. $p$ por $M$ (barras) y el error normalizado vs. $N$.
+- Con el generador anterior el sesgo era mayor en $M=3$ que en $M=5,10,50$ (Problema #5); con el propio se espera ausencia de sesgo en los cuatro casos.
 
 ## 7. Verificación de Toolchain
 
-Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `rand_r` (Problema #3, Sección 5.1), para confirmar si el toolchain de gcc de esa máquina lo soporta sin errores de enlazado. **Resultado:** falla en la notebook Windows (MinGW-w64 vía Git Bash), funciona en Mac. En vez de resolverlo con un cambio de entorno (WSL) solo para la notebook Windows, se decidió **migrar el simulador de `rand_r()` a `rand()`/`srand()`** en la versión final (ver Problema #3, Sección 5.1) — una solución de código, portable a las tres arquitecturas por igual, en vez de una dependencia de entorno que solo resuelve el síntoma en una de ellas.
+Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #3): falla en la notebook Windows (MinGW-w64 vía Git Bash), funciona en Mac. **Estado final:** el simulador ya no usa `rand_r()` ni `rand()`, sino un generador propio en C estándar (Sección 4), por lo que no hay dependencia del toolchain para la generación de números aleatorios. Esta verificación queda como registro histórico.
 
 ## 8. Metodología de Medición y Validación Estadística
 
@@ -253,14 +313,19 @@ Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `ran
 - **Toma de Tiempos:** exclusivamente alrededor del bucle de cómputo y las reducciones (pasos 4 a 7 de la Sección 4.1).
 - **Repeticiones y Mediana:** 10 corridas como mínimo por configuración. Para el cálculo del *speedup* ($S_p = T_1/T_p$), se utilizará estrictamente la **mediana estadística** de las ejecuciones, descartando picos de retraso anómalos atribuibles a factores externos del sistema operativo (ruido de fondo, *throttling* térmico, latencia de red).
 - **Validación contra la teoría:** probabilidad empírica $\hat{p}_{cambiar} = \text{victorias\_cambiando}/N$, probabilidad teórica $(M-1)/M$, y error absoluto entre ambas, calculados en C y exportados al CSV. Ver Sección 5.3 para la caracterización empírica de cómo converge este error con $N$.
+- **Independencia y registro de semillas:** cada corrida usa una semilla distinta, registrada en el CSV (Problema #6). Las repeticiones son, por lo tanto, estadísticamente independientes.
+- **Versiones de datos:** `resultados_mac_v1.csv` (generador anterior, 9 columnas) se conserva como evidencia del Problema #5; la versión final (10 columnas, con `semilla`) se guarda en un archivo nuevo. No se mezclan en el mismo CSV. El notebook debe agrupar por $(M,N,P)$ y no suponer $M$ único.
+- **Test de sesgo:** para cada $(N,M)$, media del error firmado sobre las repeticiones distintas y estadístico $t=\bar e\,\sqrt{n}/SE$ (aproximado, pues comparten generador).
 
 ## 9. Limitaciones Identificadas
 
 - **Error estadístico del método de Monte Carlo:** converge con error de orden $O(1/\sqrt{N})$ — caracterizado con datos propios en la Sección 5.3.
-- **Generador de números aleatorios:** correlación entre semillas mitigada, no eliminada por completo (Problema #2, Sección 5.1); además, se **confirmó por simulación** (Sección 5.3) el agotamiento del período del generador de la libc en corridas de $N$ extremo con un solo proceso — no relevante para el experimento real, donde $N/P$ por proceso es órdenes de magnitud menor. Recomendación de mejora anotada en la Sección 10.
-- **Sesgo de módulo:** despreciable para los valores de $M$ usados.
+- **Generador de números aleatorios:** `splitmix64` es un generador de propósito general, no criptográfico, sin garantías estadísticas tan estudiadas como otros (p. ej. `xoshiro256**` o Random123, Salmon et al. 2011, en la bibliografía); se valida empíricamente (Problema #5, corrida v2). El generador anterior (`rand()` de la libc) se descartó por su sesgo.
+- **Sesgo de módulo:** con `% M` sobre 64 bits es ≈ $5\times10^{-20}$, despreciable para los valores de $M$ usados.
 - **Comparación de tiempos entre arquitecturas:** solo tiene sentido comparar la forma de la curva de speedup por sistema, no los tiempos absolutos entre sistemas distintos.
-- **Costo de rendimiento de `int64_t` en el clúster:** tratado como hipótesis pendiente de verificación empírica (Sección 6.1), no como un hecho asumido.
+- **Alcance de plataformas:** solo Mac M1 y clúster. Sin arquitectura x86 simétrica local, la hipótesis de curva "regular" de Amdahl no se contrasta contra una tercera plataforma.
+- **Origen del codo en $P=5$ (Mac):** sin tiempos por rank no se puede atribuir con certeza a desbalance por E-cores frente a costo de comunicación; se reporta como hipótesis consistente con los datos.
+- **Orden de las corridas:** el script ejecuta las repeticiones de cada configuración de forma consecutiva, y $P=1$ abre cada bloque de $N$; el estado térmico y de frecuencia del procesador puede influir en $T_1$. Se documenta como limitación y, si se puede, se pone la repetición como bucle exterior.
 - **Supuesto sobre la regla del presentador:** válido para la variante "abre todas las puertas salvo una"; la variante alternativa queda fuera de alcance salvo indicación contraria de la cátedra (Sección 12).
 
 ## 10. Próximos Pasos (orden de prioridad, por etapas)
@@ -276,17 +341,31 @@ Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `ran
 7. ✅ Confirmar la falla del Problema #3 (`rand_r`) en Windows y decidir la migración a `rand()`/`srand()`.
 8. ✅ Verificar a mano, con $N$ chico, que el resultado sea consistente con $M=3 \Rightarrow p \approx 2/3$.
 
-**Etapa de versión final y experimento — en curso, antes del acceso al clúster:**
+**Etapa de versión final y experimento — en curso:**
 
-9. ✅ Integrar en `src/monty_hall.c` las cuatro correcciones: `int64_t`, hashing multiplicativo de semilla, `rand()`/`srand()` en vez de `rand_r()`, y balanceo de carga con resto. Compilado con `-O2` (justificado en Sección 5.2 — sin diferencia medible frente a `-O3` para este código).
-10. ✅ Script de automatización `run_experimento.sh`: barrido de $N$ (chico/mediano/grande/súper grande) y de $P$ (todos los enteros de 1 al máximo de núcleos, no solo potencias de 2), 10 repeticiones por combinación.
-11. ⏳ Escalado fuerte: **corrido en Mac M1**; **pendiente en la notebook Windows** (a cargo del compañero de grupo, mismo script y mismo código); clúster en suspenso hasta obtener acceso.
-12. En el clúster, correr el experimento de la Sección 6.1 (`int64_t` vs. tipo nativo) antes de dar por cerrada la versión final del código.
-13. **Fase 2 (según lo confirmado en la Sección 12):** correr el barrido de $M$ (3, 5, 10, 50).
-14. Escribir el notebook de Python: medianas, speedup por sistema, comparación empírico vs. teórico, y curva de convergencia del error vs. $N$ (fortalece la Sección 5.3 con el dataset completo del barrido, no solo los 2 puntos de diagnóstico).
-15. Redactar conclusiones y recomendaciones de mejora, incluyendo lo aprendido en la Bitácora de Diagnóstico. **Recomendación ya identificada:** reemplazar `rand()`/`srand()` por un generador propio de período mayor (ej. `splitmix64`, período $2^{64}$) — motivado por la confirmación de la Sección 5.3, y con el beneficio adicional de dar exactamente el mismo resultado en las tres arquitecturas (en vez de depender del `rand()` particular de cada libc). Evaluado pero no adoptado en esta entrega por razones de tiempo; queda como mejora futura documentada.
-16. Subir código (incluyendo la versión ingenua junto a la corregida, como evidencia del proceso), datos, gráficos y README al repositorio.
-17. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
+9. ✅ Versión 1 del simulador con las cuatro correcciones iniciales (`int64_t`, hashing de semilla, `rand()`, balanceo con resto), compilada con `-O2`. Sus datos (`resultados_mac_v1.csv`) se conservan como evidencia.
+10. ✅ Script de automatización `run_experimento.sh`: barrido de $N$ y de $P$ (todos los enteros de 1 al máximo de núcleos), 10 repeticiones por combinación.
+11. ✅ Escalado fuerte v1 corrido en Mac M1 y analizado (notebook). **Windows: fuera del alcance.**
+12. ⏳ **Versión final (v2) del simulador** (`src/monty_hall.c`): `splitmix64` en vez de `rand()` (Problema #5), semilla de 64 bits difundida y registrada (Problema #6), salida con 10 decimales. Compilar con `mpicc -O2`, probar con $P=1,4$, $N=10^6$ y $M=3,5$.
+13. ⏳ Mover el CSV actual a `resultados_mac_v1.csv` **antes** de correr v2 (el script solo escribe el encabezado si el archivo no existe).
+14. ⏳ Correr en Mac: $M=3$ (barrido completo de $N$ y $P$), y luego **Fase 2** con $M=5,10,50$ (Sección 6.2). Re-medir `-O2` vs. `-O3` (Sección 5.2).
+15. ⏳ Documentar el acceso y el mecanismo de lanzamiento en el clúster (Sección 6); adaptar el script si hace falta (cola, asignación de núcleos) y correr el mismo experimento ($M=3$ y Fase 2).
+16. ⏳ Actualizar el notebook: agrupar por $(M,N,P)$, agregar la columna `semilla`, gráfico de barras empírico vs. teórico por $M$, error normalizado vs. $N$, y test de sesgo. Opcional: Karp-Flatt para estimar la fracción serial.
+17. ⏳ Completar los campos **[PENDIENTE]** de los Problemas #5 y #6 y de la Sección 5.3 con los datos v2.
+18. Redactar conclusiones y recomendaciones de mejora, incluyendo la Bitácora. Mejora futura documentada: generador con saltos garantizados sin solapamiento (`xoshiro256**` con `jump`, Random123).
+19. Subir código (incluyendo la versión ingenua junto a la corregida y la carpeta `diagnostico/`), datos v1 y v2, gráficos y README al repositorio.
+20. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
+
+**Cronograma sugerido (7 días):**
+
+| Día | Actividad |
+|---|---|
+| 1 | Ítems 12 a 14: código final, prueba corta y barrido $M=3$ en Mac. |
+| 2 | Fase 2 en Mac ($M=5,10,50$) y actualización del notebook (ítem 16). |
+| 3 a 4 | Clúster: acceso, adaptación del script y corridas (ítem 15). |
+| 5 | Análisis y gráficos finales; completar los campos **[PENDIENTE]**. |
+| 6 | Informe, README y repositorio. |
+| 7 | Margen. |
 
 ## 11. Bibliografía
 
@@ -300,5 +379,13 @@ Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `ran
 
 ## 12. Puntos Pendientes de Confirmación con la Cátedra
 
-- **Alcance de la generalización:** ¿la generalización a $M$ puertas (Fase 2, Sección 2.2) se espera como parte del análisis o es un plus opcional? ¿Conviene también implementar la variante donde el presentador abre una sola puerta?
-- **Acceso al clúster de la Facultad:** pendiente de confirmación (credenciales, login directo vs. gestor de colas).
+- ✅ **Alcance de la generalización:** la generalización a $M$ puertas (Fase 2, Sección 2.2) fue **confirmada** como parte del trabajo; se barren $M=3,5,10,50$ (Sección 6.2).
+- ❓ **Variante del presentador que abre una sola puerta:** sin confirmación; se mantiene fuera de alcance (Sección 2.2).
+- ❓ **Plataformas:** confirmar que Mac M1 + clúster son suficientes (la notebook Windows quedó fuera por razones logísticas del grupo) y que la evidencia de Windows (Problemas #1 y #3) puede presentarse como diagnóstico.
+- ✅ **Acceso al clúster de la Facultad:** acceso obtenido. Falta documentar el mecanismo de lanzamiento (Sección 6).
+
+## 13. Registro de cambios
+
+| Fecha | Cambio |
+|---|---|
+| 29/09/2026 | Fase 2 confirmada (Secciones 1, 2.2, 6.2, 12). Alcance reducido a Mac M1 + clúster: se descarta el experimento de la Sección 6.1 y se marcan como superados los Problemas #1 y #3. Nuevo Problema #5 (sesgo de `rand() % M`) y Problema #6 (semillas repetidas); se corrige la Sección 5.3, cuya conclusión anterior (agotamiento del período) queda reemplazada. Se reemplaza `rand()` por `splitmix64` y se actualizan Secciones 4, 5.2, 6 a 10 y 12. Se corrige la descripción del flujo (Sección 4.1): no hay segunda barrera y hay dos `MPI_Reduce`. |
