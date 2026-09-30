@@ -172,6 +172,10 @@ El código mantiene la barrera previa al cómputo (necesaria para que todos los 
 
 Para consolidar los contadores locales de victorias en el proceso raíz, se descartó implementar un bucle manual de `MPI_Send`/`MPI_Recv`. Esa alternativa obligaría al raíz a recibir los $P-1$ mensajes de forma secuencial (costo de comunicación $O(P)$), y agregaría superficie de error por posibles *deadlocks* si el orden de envío/recepción no coincide entre procesos. `MPI_Reduce` resuelve el mismo problema delegando en la implementación de MPI un patrón de comunicación jerárquico (típicamente en árbol, como el de la teoría de la cátedra), con complejidad $O(\log P)$ y sin riesgo de interbloqueo por diseño propio. Queda como verificación pendiente, opcional y no bloqueante, medir esta diferencia empíricamente en el clúster (donde $P$ grande la haría más perceptible) implementando una variante con `Send`/`Recv` manual solo a fines comparativos.
 
+#### Bandera de optimización del compilador: `-O2` en vez de `-O3`
+
+Se evaluó explícitamente si subir a `-O3` (que habilita además *loop unrolling* agresivo y *loop peeling*, según `gcc -Q --help=optimizers`) mejoraría el rendimiento del núcleo de la simulación, dado que se trata de un bucle numérico intensivo. Se midió directamente en vez de asumirlo: compilando el mismo bucle con `-O0`, `-O2` y `-O3`, el tiempo por iteración se mantuvo estable en las tres (~37-38 ns/iteración), sin diferencia significativa. La causa: el cuello de botella no es aritmética vectorizable, sino la llamada a `rand()` de la libc, que mantiene estado interno global y contiene ramas de control — el propio compilador reporta explícitamente `"couldn't vectorize loop: control flow in loop"` y `"statement clobbers memory: rand()"` al pedirle el detalle de vectorización (`-fopt-info-vec-all`). Ni `-O2` ni `-O3` pueden vectorizar ni desenrollar de forma útil una llamada a función opaca con efectos colaterales. Se mantiene `-O2` por ser el estándar razonable para este nivel de código, sin costo de rendimiento medible frente a `-O3` en este caso puntual.
+
 ### 5.3 Propiedades Caracterizadas Empíricamente
 
 #### Convergencia $O(1/\sqrt{N})$ del error de Monte Carlo
@@ -193,11 +197,21 @@ $$SE = \sqrt{\frac{p(1-p)}{N}} \approx \sqrt{\frac{0{,}2222}{N}}$$
 
 Un desvío de más de $4\sigma$ tiene una probabilidad de ocurrir por azar de aproximadamente 1 en 16.000 — infrecuente, pero no imposible en una corrida aislada. Que se repita dos veces, en ejecuciones independientes, con una magnitud tan similar, ya deja de ser explicable como pura casualidad (la probabilidad de que ambas superen los $3{,}9\sigma$ por azar es muchísimo menor que la de una sola).
 
-**Hipótesis revisada:** la hipótesis original (correlación entre procesos, Sección 5.1 Problema #2) **se descarta explícitamente** para este caso: ambas corridas usan $P=1$, y con un único proceso no hay otro proceso con el cual correlacionar — el mecanismo del Problema #2 no puede operar acá. La hipótesis más específica y consistente con la evidencia es otra: `rand_r()` de glibc es, en el fondo, un generador congruencial con estado de 32 bits (período del orden de $2^{32}$), y esta corrida puntual lo llama miles de millones de veces ($N=2{,}2\times10^9$ iteraciones × 2 llamadas cada una $\approx 4{,}4\times10^9$ llamadas totales). Es matemáticamente plausible que la secuencia interna empiece a repetirse parcialmente dentro de una misma corrida, reduciendo la cantidad de muestras verdaderamente independientes por debajo de lo que asume la fórmula de $SE$ usada. No se cuenta con el valor exacto del período de esta implementación puntual como para confirmarlo con certeza — requeriría un test aislado (sembrar el generador y contar cuántas llamadas hacen falta para que la salida se repita), que queda como verificación opcional, no bloqueante.
+**Hipótesis revisada y CONFIRMADA por simulación:** la hipótesis original (correlación entre procesos, Sección 5.1 Problema #2) **se descarta explícitamente** para este caso: ambas corridas usan $P=1$, y con un único proceso no hay otro proceso con el cual correlacionar — el mecanismo del Problema #2 no puede operar acá. La hipótesis específica es el agotamiento del período del generador: `rand()`/`rand_r()` de la libc del sistema es, en el fondo, un generador congruencial con estado acotado, y esta corrida puntual lo llama miles de millones de veces ($N=2{,}2\times10^9$ iteraciones × 2 llamadas cada una $\approx 4{,}4\times10^9$ llamadas totales).
+
+Esto se verificó reimplementando el algoritmo `do_rand()` de la libc BSD/macOS (generador Park-Miller, período $2^{31}-2 \approx 2{,}147\times10^9$) y simulando exactamente el mismo experimento con distintos $N$:
+
+| $N$ | Llamadas totales | % del período | Error / $SE$ (simulado) | Error / $SE$ (real, Mac) |
+|---|---|---|---|---|
+| $10^8$ | $2\times10^8$ | ~9% | $1{,}5$ a $1{,}9$ | — |
+| $10^9$ | $2\times10^9$ | ~93% | $2{,}9$ a $3{,}3$ | — |
+| $2{,}2\times10^9$ | $4{,}4\times10^9$ | ~205% (dos vueltas) | $4{,}0$ a $4{,}2$ | $3{,}93$ y $4{,}06$ |
+
+La simulación reproduce, con la misma magnitud, el desvío observado en las corridas reales — y muestra además que el efecto **crece de forma continua con la fracción del período consumida**, no aparece de golpe recién en $N=2{,}2\times10^9$. Esto confirma con un modelo concreto (no solo con sospecha teórica) que el período finito del generador de la libc es la causa del hallazgo, y motiva la recomendación de mejora de la Sección 10: evaluar un generador propio de período mayor (ej. `splitmix64`, período $2^{64}$) para la versión final, en vez de depender de `rand()`/`rand_r()` del sistema.
 
 **Por qué esto no amenaza el experimento real:** este artefacto solo es relevante al forzar un $N$ extremo en un único proceso, específicamente para poder diagnosticar el Problema #1. En el escalado fuerte real, cada proceso maneja $N/P$ — del orden de millones, no miles de millones — muy por debajo de cualquier límite de período del generador. No hay razón para esperar que este efecto contamine las mediciones de speedup del experimento final.
 
-**Conclusión:** los datos propios confirman la tendencia general de $O(1/\sqrt{N})$ — al aumentar $N$ en un factor ~2200, el error se redujo en un orden de magnitud comparable a $\sqrt{2200}\approx47$. La observación de un error sistemáticamente elevado en $N=2{,}2\times10^9$, reproducida en dos corridas independientes, queda documentada como hallazgo abierto con una hipótesis específica (agotamiento del período del generador), en vez de la hipótesis de correlación entre procesos, descartada por no aplicar a un caso de $P=1$.
+**Conclusión:** los datos propios confirman la tendencia general de $O(1/\sqrt{N})$ — al aumentar $N$ en un factor ~2200, el error se redujo en un orden de magnitud comparable a $\sqrt{2200}\approx47$. El error sistemáticamente elevado en $N=2{,}2\times10^9$, reproducido en dos corridas independientes, queda **confirmado** (no solo hipotetizado) como agotamiento del período del generador de la libc del sistema, mediante simulación directa del algoritmo `do_rand()` — no como correlación entre procesos, hipótesis descartada por no aplicar a un caso de $P=1$.
 
 ## 6. Plan de Pruebas y Hardware
 
@@ -243,7 +257,7 @@ Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `ran
 ## 9. Limitaciones Identificadas
 
 - **Error estadístico del método de Monte Carlo:** converge con error de orden $O(1/\sqrt{N})$ — caracterizado con datos propios en la Sección 5.3.
-- **Generador de números aleatorios:** correlación entre semillas mitigada, no eliminada por completo (Problema #2, Sección 5.1); además, se observó (Sección 5.3) un posible agotamiento del período del generador en corridas de $N$ extremo con un solo proceso — no relevante para el experimento real, donde $N/P$ por proceso es órdenes de magnitud menor.
+- **Generador de números aleatorios:** correlación entre semillas mitigada, no eliminada por completo (Problema #2, Sección 5.1); además, se **confirmó por simulación** (Sección 5.3) el agotamiento del período del generador de la libc en corridas de $N$ extremo con un solo proceso — no relevante para el experimento real, donde $N/P$ por proceso es órdenes de magnitud menor. Recomendación de mejora anotada en la Sección 10.
 - **Sesgo de módulo:** despreciable para los valores de $M$ usados.
 - **Comparación de tiempos entre arquitecturas:** solo tiene sentido comparar la forma de la curva de speedup por sistema, no los tiempos absolutos entre sistemas distintos.
 - **Costo de rendimiento de `int64_t` en el clúster:** tratado como hipótesis pendiente de verificación empírica (Sección 6.1), no como un hecho asumido.
@@ -262,15 +276,15 @@ Se compiló y ejecutó un programa mínimo en cada sistema que solo llama a `ran
 7. ✅ Confirmar la falla del Problema #3 (`rand_r`) en Windows y decidir la migración a `rand()`/`srand()`.
 8. ✅ Verificar a mano, con $N$ chico, que el resultado sea consistente con $M=3 \Rightarrow p \approx 2/3$.
 
-**Etapa de versión final y experimento — a partir del acceso al clúster:**
+**Etapa de versión final y experimento — en curso, antes del acceso al clúster:**
 
-9. Integrar en un único código final las cuatro correcciones: `int64_t`, hashing multiplicativo de semilla, `rand()`/`srand()` en vez de `rand_r()`, y balanceo de carga con resto (ya presente desde la versión ingenua).
-10. Escribir el script de automatización en bash para ejecutar el programa 10 veces (mínimo) por configuración de $P$.
-11. Ejecutar el escalado fuerte en Mac M1, notebook Windows y clúster.
+9. ✅ Integrar en `src/monty_hall.c` las cuatro correcciones: `int64_t`, hashing multiplicativo de semilla, `rand()`/`srand()` en vez de `rand_r()`, y balanceo de carga con resto. Compilado con `-O2` (justificado en Sección 5.2 — sin diferencia medible frente a `-O3` para este código).
+10. ✅ Script de automatización `run_experimento.sh`: barrido de $N$ (chico/mediano/grande/súper grande) y de $P$ (todos los enteros de 1 al máximo de núcleos, no solo potencias de 2), 10 repeticiones por combinación.
+11. ⏳ Escalado fuerte: **corrido en Mac M1**; **pendiente en la notebook Windows** (a cargo del compañero de grupo, mismo script y mismo código); clúster en suspenso hasta obtener acceso.
 12. En el clúster, correr el experimento de la Sección 6.1 (`int64_t` vs. tipo nativo) antes de dar por cerrada la versión final del código.
 13. **Fase 2 (según lo confirmado en la Sección 12):** correr el barrido de $M$ (3, 5, 10, 50).
-14. Escribir el notebook de Python: medianas, speedup por sistema, comparación empírico vs. teórico.
-15. Redactar conclusiones y recomendaciones de mejora, incluyendo lo aprendido en la Bitácora de Diagnóstico.
+14. Escribir el notebook de Python: medianas, speedup por sistema, comparación empírico vs. teórico, y curva de convergencia del error vs. $N$ (fortalece la Sección 5.3 con el dataset completo del barrido, no solo los 2 puntos de diagnóstico).
+15. Redactar conclusiones y recomendaciones de mejora, incluyendo lo aprendido en la Bitácora de Diagnóstico. **Recomendación ya identificada:** reemplazar `rand()`/`srand()` por un generador propio de período mayor (ej. `splitmix64`, período $2^{64}$) — motivado por la confirmación de la Sección 5.3, y con el beneficio adicional de dar exactamente el mismo resultado en las tres arquitecturas (en vez de depender del `rand()` particular de cada libc). Evaluado pero no adoptado en esta entrega por razones de tiempo; queda como mejora futura documentada.
 16. Subir código (incluyendo la versión ingenua junto a la corregida, como evidencia del proceso), datos, gráficos y README al repositorio.
 17. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
 

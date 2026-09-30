@@ -23,3 +23,4 @@ Para obtener el máximo rendimiento computacional, compilamos aplicando la bande
 
 ```bash
 mpicc -O3 -Wall -o monty_hall src/monty_hall.c
+
