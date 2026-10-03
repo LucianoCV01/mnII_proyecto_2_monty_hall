@@ -1,6 +1,6 @@
 # Plan de Desarrollo: Proyecto 2 - Monty Hall (HPC)
 
-> **Última actualización:** 29/09/2026. Cambios principales: Fase 2 confirmada, alcance reducido a Mac M1 + clúster, generador propio (`splitmix64`) y nuevos Problemas #5 y #6. Ver Sección 13 (Registro de cambios). Lo marcado **[PENDIENTE]** se completa tras la corrida final (v2).
+> **Última actualización:** 30/09/2026. Cambios principales: Fase 2 confirmada, alcance reducido a Mac M1 + clúster, generador propio (`splitmix64`) y nuevos Problemas #5 y #6, y justificación documentada de `MPI_Barrier` (Sección 5.2). Ver Sección 13 (Registro de cambios). Lo marcado **[PENDIENTE]** se completa tras la corrida final (v2).
 
 ## 1. Descripción General y Objetivos
 
@@ -77,7 +77,7 @@ Dado que el problema es "embarazosamente paralelo" (cada iteración es independi
 1. **Inicialización de MPI:** cada proceso obtiene su rank y el tamaño del grupo (modelo SPMD).
 2. **Lectura de parámetros y semilla:** cada proceso lee los mismos `argv` ($N$, $M$, semilla opcional). El rank 0 genera la semilla base si no se indicó una y la difunde (`MPI_Bcast`, fuera de la zona medida).
 3. **Balanceo de carga:** división entera más resto ($\lfloor N/P \rfloor$ por proceso, resto distribuido entre los primeros procesos).
-4. **Sincronización previa a la medición:** barrera antes de arrancar el cronómetro.
+4. **Sincronización previa a la medición:** barrera antes de arrancar el cronómetro (queda fuera de la zona medida; justificación en la Sección 5.2).
 5. **Cómputo local:** cada proceso sortea, para cada simulación local, la puerta premiada y la elegida; compara ambas para determinar victoria "cambiando" o "manteniendo".
 6. **Reducción colectiva:** suma de los contadores locales de ambos tipos de victoria hacia el proceso raíz.
 7. **Cierre de medición:** se detiene el cronómetro tras la reducción, sin barrera adicional (justificación en la Sección 5.2).
@@ -210,11 +210,28 @@ El sesgo también existe, mucho menor, para los otros valores de $M$ de la Fase 
 
 ### 5.2 Decisiones de Diseño Justificadas
 
-Estas tres decisiones nunca partieron de una versión que fallara — se implementaron así desde el principio. Lo que corresponde documentar acá no es un diagnóstico, sino la justificación explícita de cada una.
+Estas decisiones nunca partieron de una versión que fallara — se implementaron así desde el principio. Lo que corresponde documentar acá no es un diagnóstico, sino la justificación explícita de cada una.
 
 #### Granularidad del registro (agregado vs. por simulación)
 
 Se optó por una salida de datos agregada (una línea CSV por ejecución) en lugar de registrar cada simulación individualmente. El overflow del Problema #1 y la correlación del Problema #2 no dependen de ninguna simulación puntual — se observan comparando el valor de entrada/salida agregado contra lo esperado, no mirando fila por fila. Registrar miles de millones de iteraciones individuales generaría, además, un cuello de botella de E/S que contradice el diseño de datos sintéticos en memoria adoptado desde el inicio.
+
+#### Barrera previa a la medición (`MPI_Barrier`)
+
+**Decisión:** se mantiene una única `MPI_Barrier` inmediatamente antes de `t_inicio = MPI_Wtime()`. No hay barreras dentro del algoritmo: cada proceso simula de forma independiente y solo se comunica en los dos `MPI_Reduce` finales.
+
+**Qué se mide y qué no (modelo de la cátedra, $T = T_{proc} + T_{com} + T_{idle}$):**
+- La región cronometrada incluye $T_{proc}$ (bucle de simulación), $T_{com}$ (los dos `MPI_Reduce`) y $T_{idle}$: como `t_fin` se toma después de la reducción, el rank 0 espera al proceso más lento y esa espera queda dentro del tiempo medido.
+- La barrera está **fuera** de esa región: su costo no se suma a $T_p$ y no oculta $T_{idle}$.
+- Lo que se excluye es el lanzamiento de procesos, `MPI_Init` y el desfase de arranque entre ranks. Por lo tanto, el speedup reportado es el de la **región paralela**, no el del programa completo (tiempo de pared).
+
+**Por qué se mantiene:** como solo el rank 0 reporta tiempo, sin barrera su cronómetro arrancaría antes o después que el de los demás según el orden de arranque, y el sesgo puede ir en **cualquier sentido**: si arranca primero, mide de más (speedup menor); si arranca último, mide de menos (speedup **optimista**). La barrera fija un origen común. El sesgo residual es la dispersión con que los ranks salen de la barrera (del orden de microsegundos), despreciable frente al cómputo salvo con $N=10^5$ ($T_p\approx0{,}3$ ms), valor que ya se descartó para juzgar escalabilidad.
+
+**El overhead observado no proviene de la barrera ni de la comunicación.** Con los datos v1 de la Mac ($N=10^9$), el overhead $T_p - T_1/P$ va de 0,17 s ($P=2$) a 0,48 s ($P=8$), y con $P=8$ crece ≈ 8,5 veces al pasar de $N=10^8$ (0,056 s) a $N=10^9$ (0,476 s). Una barrera o una reducción cuestan microsegundos a milisegundos, independientes de $N$; un overhead que crece con el trabajo es compatible con $T_{idle}$ por heterogeneidad (el reparto equitativo de *iteraciones* no equivale a un reparto equitativo de *tiempo* entre P-cores y E-cores). No permite separar ese efecto de otros que también crecen con $N$ (frecuencia por núcleo, térmicos); para eso harían falta tiempos por rank.
+
+**Verificación no realizada (requisito futuro) [PENDIENTE]:** la prueba con y sin barrera **no se ejecutó**; esta justificación se apoya en el razonamiento y en los datos anteriores, no en una medición directa. Procedimiento previsto:
+1. Condicionar la barrera con una variable de entorno (`if (getenv("MH_SIN_BARRERA") == NULL) MPI_Barrier(MPI_COMM_WORLD);`), correr en Mac con etiqueta `mac_sinbarrera` y comparar medianas **y dispersión** (IQR) del speedup. Expectativa, no medida: sin diferencia sistemática con $N$ grande y mayor dispersión sin barrera con $N$ chico.
+2. Calcular el speedup con tiempo de pared (`/usr/bin/time -p mpirun ...`) para cuantificar el costo de lanzamiento que la región cronometrada excluye.
 
 #### Eliminación de la barrera posterior a `MPI_Reduce`
 
@@ -228,7 +245,7 @@ Para consolidar los contadores locales de victorias en el proceso raíz, se desc
 
 Se evaluó explícitamente si subir a `-O3` (que habilita además *loop unrolling* agresivo y *loop peeling*, según `gcc -Q --help=optimizers`) mejoraría el rendimiento del núcleo de la simulación, dado que se trata de un bucle numérico intensivo. Se midió directamente en vez de asumirlo: compilando el mismo bucle con `-O0`, `-O2` y `-O3`, el tiempo por iteración se mantuvo estable en las tres (~37-38 ns/iteración), sin diferencia significativa. La causa: el cuello de botella no es aritmética vectorizable, sino la llamada a `rand()` de la libc, que mantiene estado interno global y contiene ramas de control — el propio compilador reporta explícitamente `"couldn't vectorize loop: control flow in loop"` y `"statement clobbers memory: rand()"` al pedirle el detalle de vectorización (`-fopt-info-vec-all`). Ni `-O2` ni `-O3` pueden vectorizar ni desenrollar de forma útil una llamada a función opaca con efectos colaterales. Se mantiene `-O2` por ser el estándar razonable para este nivel de código, sin costo de rendimiento medible frente a `-O3` en este caso puntual.
 
-**Nota posterior (generador propio):** esta medición se hizo con `rand()`, una llamada opaca con estado global. Con `splitmix64` (inline, sin llamadas opacas) esa justificación ya no aplica textualmente, por lo que la comparación `-O2` vs. `-O3` debe repetirse con el código final: **[PENDIENTE]**. Además, **[REVISAR]** la cifra de ~37-38 ns/iteración difiere de los ≈14,3 ns/iteración que muestra el CSV v1 a $P=1$ ($N\ge10^7$); confirmar qué configuración produjo cada una antes de citarlas juntas.
+**Nota posterior (generador propio):** esta medición se hizo con `rand()`, una llamada opaca con estado global. Con `splitmix64` (inline, sin llamadas opacas) esa justificación ya no aplica textualmente, por lo que la comparación `-O2` vs. `-O3` debe repetirse con el código final. Datos tomados en la Mac con $M=3$: `resultados_mac_v2.csv` (`-O2`) y `resultados_mac_v2_O3.csv` (`-O3`); **análisis [PENDIENTE]**. Además, **[REVISAR]** la cifra de ~37-38 ns/iteración difiere de los ≈14,3 ns/iteración que muestra el CSV v1 a $P=1$ ($N\ge10^7$); confirmar qué configuración produjo cada una antes de citarlas juntas.
 
 ### 5.3 Propiedades Caracterizadas Empíricamente
 
@@ -298,7 +315,7 @@ Se había planteado comparar `int64_t` contra el tipo nativo en el clúster. Con
 ### 6.2 Diseño del barrido de $M$ (Fase 2)
 
 - Se ejecuta `run_experimento.sh` una vez por cada valor de $M$ (3, 5, 10, 50), con el mismo barrido de $N$ y $P$, acumulando todo en el mismo CSV (la columna `M` distingue los casos). En el clúster se puede acotar con la lista de $N$ y el paso de $P$ del script.
-- El objetivo de la Fase 2 es la **validación estadística** frente a $(M-1)/M$; el análisis de speedup se hace con $M=3$ (el costo por iteración no cambia con $M$).
+- El objetivo de la Fase 2 es la **validación estadística** frente a $(M-1)/M$; el análisis de speedup se hace con $M=3$ (se supone que el costo por iteración no cambia con $M$; **[A VERIFICAR]** comparando $T_1$ por $M$ en el CSV v2).
 - Criterio de validación por $(N,M)$: $z=(\hat p-p)/SE$ por corrida; se espera media de $z$ compatible con 0 y ≈ 95 % de las corridas con $\lvert z\rvert<2$. Se grafica $\hat p$ vs. $p$ por $M$ (barras) y el error normalizado vs. $N$.
 - Con el generador anterior el sesgo era mayor en $M=3$ que en $M=5,10,50$ (Problema #5); con el propio se espera ausencia de sesgo en los cuatro casos.
 
@@ -314,7 +331,7 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 - **Repeticiones y Mediana:** 10 corridas como mínimo por configuración. Para el cálculo del *speedup* ($S_p = T_1/T_p$), se utilizará estrictamente la **mediana estadística** de las ejecuciones, descartando picos de retraso anómalos atribuibles a factores externos del sistema operativo (ruido de fondo, *throttling* térmico, latencia de red).
 - **Validación contra la teoría:** probabilidad empírica $\hat{p}_{cambiar} = \text{victorias\_cambiando}/N$, probabilidad teórica $(M-1)/M$, y error absoluto entre ambas, calculados en C y exportados al CSV. Ver Sección 5.3 para la caracterización empírica de cómo converge este error con $N$.
 - **Independencia y registro de semillas:** cada corrida usa una semilla distinta, registrada en el CSV (Problema #6). Las repeticiones son, por lo tanto, estadísticamente independientes.
-- **Versiones de datos:** `resultados_mac_v1.csv` (generador anterior, 9 columnas) se conserva como evidencia del Problema #5; la versión final (10 columnas, con `semilla`) se guarda en un archivo nuevo. No se mezclan en el mismo CSV. El notebook debe agrupar por $(M,N,P)$ y no suponer $M$ único.
+- **Versiones de datos:** `resultados_mac_v1.csv` (generador anterior, 9 columnas) se conserva como evidencia del Problema #5; la versión final (10 columnas, con `semilla`) se guarda en `resultados_mac_v2.csv` (`-O2`) y `resultados_mac_v2_O3.csv` (`-O3`). El script V2 aborta si el encabezado de un archivo existente no coincide, por lo que no se mezclan versiones. El notebook debe agrupar por $(M,N,P)$ y no suponer $M$ único.
 - **Test de sesgo:** para cada $(N,M)$, media del error firmado sobre las repeticiones distintas y estadístico $t=\bar e\,\sqrt{n}/SE$ (aproximado, pues comparten generador).
 
 ## 9. Limitaciones Identificadas
@@ -325,7 +342,8 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 - **Comparación de tiempos entre arquitecturas:** solo tiene sentido comparar la forma de la curva de speedup por sistema, no los tiempos absolutos entre sistemas distintos.
 - **Alcance de plataformas:** solo Mac M1 y clúster. Sin arquitectura x86 simétrica local, la hipótesis de curva "regular" de Amdahl no se contrasta contra una tercera plataforma.
 - **Origen del codo en $P=5$ (Mac):** sin tiempos por rank no se puede atribuir con certeza a desbalance por E-cores frente a costo de comunicación; se reporta como hipótesis consistente con los datos.
-- **Orden de las corridas:** el script ejecuta las repeticiones de cada configuración de forma consecutiva, y $P=1$ abre cada bloque de $N$; el estado térmico y de frecuencia del procesador puede influir en $T_1$. Se documenta como limitación y, si se puede, se pone la repetición como bucle exterior.
+- **Orden de las corridas:** en la v1 las repeticiones de cada configuración eran consecutivas y $P=1$ abría cada bloque de $N$, lo que podía asociar el estado térmico y de frecuencia a una sola configuración. El script V2 pone la repetición como bucle exterior, lo que mitiga este efecto (no se verificó empíricamente).
+- **Barrera previa sin verificación empírica:** la decisión de mantener `MPI_Barrier` antes del cronómetro se justifica por razonamiento y por los datos v1 (Sección 5.2), pero la prueba con y sin barrera no se ejecutó. El speedup reportado es el de la región paralela y excluye el lanzamiento de procesos.
 - **Supuesto sobre la regla del presentador:** válido para la variante "abre todas las puertas salvo una"; la variante alternativa queda fuera de alcance salvo indicación contraria de la cátedra (Sección 12).
 
 ## 10. Próximos Pasos (orden de prioridad, por etapas)
@@ -346,9 +364,10 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 9. ✅ Versión 1 del simulador con las cuatro correcciones iniciales (`int64_t`, hashing de semilla, `rand()`, balanceo con resto), compilada con `-O2`. Sus datos (`resultados_mac_v1.csv`) se conservan como evidencia.
 10. ✅ Script de automatización `run_experimento.sh`: barrido de $N$ y de $P$ (todos los enteros de 1 al máximo de núcleos), 10 repeticiones por combinación.
 11. ✅ Escalado fuerte v1 corrido en Mac M1 y analizado (notebook). **Windows: fuera del alcance.**
-12. ⏳ **Versión final (v2) del simulador** (`src/monty_hall.c`): `splitmix64` en vez de `rand()` (Problema #5), semilla de 64 bits difundida y registrada (Problema #6), salida con 10 decimales. Compilar con `mpicc -O2`, probar con $P=1,4$, $N=10^6$ y $M=3,5$.
-13. ⏳ Mover el CSV actual a `resultados_mac_v1.csv` **antes** de correr v2 (el script solo escribe el encabezado si el archivo no existe).
-14. ⏳ Correr en Mac: $M=3$ (barrido completo de $N$ y $P$), y luego **Fase 2** con $M=5,10,50$ (Sección 6.2). Re-medir `-O2` vs. `-O3` (Sección 5.2).
+12. ✅ **Versión final (v2) del simulador** (`src/monty_hall.c`): `splitmix64` en vez de `rand()` (Problema #5), semilla de 64 bits difundida y registrada (Problema #6), salida con 10 decimales; compilada con `mpicc -O2` por el script. La prueba corta previa ($P=1,4$, $N=10^6$, $M=3,5$) no se ejecutó como paso separado; el resumen final del script (semillas distintas = filas) sirve de verificación **[PENDIENTE: confirmar el resultado]**.
+13. ✅ (ya no necesario) Mover el CSV de la v1: el script V2 escribe en `resultados_mac_v2.csv` (y `_O3`), no toca la v1 y aborta ante un encabezado distinto. Renombrar la v1 a `resultados_mac_v1.csv` queda solo por claridad.
+14. ✅ **Ejecutado en Mac:** `bash scripts/run_experimento.sh "" 3,5,10,50` ($M=3,5,10,50$, barrido completo de $N$ y $P$, salida `resultados_mac_v2.csv`) y `bash scripts/run_experimento.sh "" 3 10 1 "" -O3` ($M=3$, salida `resultados_mac_v2_O3.csv`). ⏳ **Análisis pendiente:** sesgo y validación empírico-teórica por $M$, $T_1$ por $M$ (supuesto de la Sección 6.2) y `-O2` vs. `-O3` (Sección 5.2).
+14 bis. ⏳ **(Futuro, no bloqueante)** Prueba con y sin `MPI_Barrier` y comparación con tiempo de pared: no ejecutada; justificación y procedimiento en la Sección 5.2.
 15. ⏳ Documentar el acceso y el mecanismo de lanzamiento en el clúster (Sección 6); adaptar el script si hace falta (cola, asignación de núcleos) y correr el mismo experimento ($M=3$ y Fase 2).
 16. ⏳ Actualizar el notebook: agrupar por $(M,N,P)$, agregar la columna `semilla`, gráfico de barras empírico vs. teórico por $M$, error normalizado vs. $N$, y test de sesgo. Opcional: Karp-Flatt para estimar la fracción serial.
 17. ⏳ Completar los campos **[PENDIENTE]** de los Problemas #5 y #6 y de la Sección 5.3 con los datos v2.
@@ -388,4 +407,5 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 
 | Fecha | Cambio |
 |---|---|
+| 30/09/2026 | Ítems 12 a 14 de la Sección 10 actualizados (corridas $M=3,5,10,50$ y `-O3` ejecutadas en Mac; análisis pendiente). Agregada la justificación de `MPI_Barrier` (Sección 5.2) con la prueba con y sin barrera como requisito futuro no ejecutado; corregida la descripción de las limitaciones (orden de corridas, barrera) y los nombres de los CSV de la v2. |
 | 29/09/2026 | Fase 2 confirmada (Secciones 1, 2.2, 6.2, 12). Alcance reducido a Mac M1 + clúster: se descarta el experimento de la Sección 6.1 y se marcan como superados los Problemas #1 y #3. Nuevo Problema #5 (sesgo de `rand() % M`) y Problema #6 (semillas repetidas); se corrige la Sección 5.3, cuya conclusión anterior (agotamiento del período) queda reemplazada. Se reemplaza `rand()` por `splitmix64` y se actualizan Secciones 4, 5.2, 6 a 10 y 12. Se corrige la descripción del flujo (Sección 4.1): no hay segunda barrera y hay dos `MPI_Reduce`. |

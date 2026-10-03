@@ -1,0 +1,180 @@
+
+=================== 1. IDENTIFICACION ===================
+fecha: 2026-10-01 20:30:46 UTC
+hostname: jupyter-<oculto>
+$ uname -srm
+Linux 5.14.0-687.36.1.el9_8.x86_64 x86_64
+$ grep -E '^(PRETTY_NAME)' /etc/os-release
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+contenedor: no detectado  kubernetes: si
+
+=================== 2. CPU ===================
+$ lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           43 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  128
+On-line CPU(s) list:                     0-127
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD EPYC 7B12 64-Core Processor
+CPU family:                              23
+Model:                                   49
+Thread(s) per core:                      1
+Core(s) per socket:                      64
+Socket(s):                               2
+Stepping:                                0
+Frequency boost:                         enabled
+CPU(s) scaling MHz:                      73%
+CPU max MHz:                             3317.1470
+CPU min MHz:                             1500.0000
+BogoMIPS:                                4499.97
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 cqm rdt_a rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif v_spec_ctrl umip rdpid overflow_recov succor smca sev sev_es
+Virtualization:                          AMD-V
+L1d cache:                               4 MiB (128 instances)
+L1i cache:                               4 MiB (128 instances)
+L2 cache:                                64 MiB (128 instances)
+L3 cache:                                512 MiB (32 instances)
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-63
+NUMA node1 CPU(s):                       64-127
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Vulnerable
+Vulnerability Spec rstack overflow:      Vulnerable
+Vulnerability Spec store bypass:         Vulnerable
+Vulnerability Spectre v1:                Vulnerable: __user pointer sanitization and usercopy barriers only; no swapgs barriers
+Vulnerability Spectre v2:                Vulnerable; IBPB: disabled; STIBP: disabled; PBRSB-eIBRS: Not affected; BHI: Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Vulnerable
+$ nproc; nproc --all; getconf _NPROCESSORS_ONLN
+128
+128
+128
+$ grep -E 'Cpus_allowed_list' /proc/self/status
+Cpus_allowed_list:	0-127
+$ taskset -cp $$
+pid 508's current affinity list: 0-127
+$ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+performance
+$ grep -m1 'cpu MHz' /proc/cpuinfo
+cpu MHz		: 1973.504
+
+=================== 3. LIMITES DEL CONTENEDOR (cgroup y variables del spawner) ===================
+$ cat /sys/fs/cgroup/cpu.max
+1200000 100000
+$ cat /sys/fs/cgroup/cpuset.cpus.effective
+0-127
+$ cat /sys/fs/cgroup/memory.max
+51539607552
+$ cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us /sys/fs/cgroup/cpu/cpu.cfs_period_us
+cat: /sys/fs/cgroup/cpu/cpu.cfs_quota_us: No such file or directory
+cat: /sys/fs/cgroup/cpu/cpu.cfs_period_us: No such file or directory
+(fallo o no disponible: codigo 1)
+$ env | grep -E '^(CPU_LIMIT|CPU_GUARANTEE|MEM_LIMIT|MEM_GUARANTEE|SLURM_[A-Z_]*|PBS_[A-Z_]*|OMP_[A-Z_]*|OMPI_[A-Z_]*|PMIX_[A-Z_]*)='
+MEM_LIMIT=51539607552
+MEM_GUARANTEE=25769803776
+CPU_GUARANTEE=6.0
+CPU_LIMIT=12.0
+
+=================== 4. MEMORIA Y DISCO ===================
+$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:           503Gi        26Gi       205Gi        17Gi       292Gi       477Gi
+Swap:             0B          0B          0B
+$ df -h $HOME | tail -n 2
+Filesystem                                                                                            Size  Used Avail Use% Mounted on
+head:/k3s/lab-claim-lucianocosentino01-gmail-com---ff0a1f8f-pvc-0cedbaeb-9490-4bde-8ef6-b2bd04dbe3b5  381T  290T   92T  76% /home/jovyan
+
+=================== 5. CARGA ACTUAL (otros usuarios / ruido) ===================
+$ uptime
+ 20:30:46 up 48 days,  1:15,  0 user,  load average: 0.16, 0.09, 0.08
+$ cat /proc/loadavg
+0.16 0.09 0.08 1/1833 589
+$ top -bn1 | head -n 15
+top - 20:30:46 up 48 days,  1:15,  0 user,  load average: 0.16, 0.09, 0.08
+Tasks:  16 total,   1 running,  15 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.1 us,  0.0 sy,  0.0 ni, 99.9 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st 
+MiB Mem : 515801.7 total, 210807.8 free,  26760.0 used, 299857.1 buff/cache     
+MiB Swap:      0.0 total,      0.0 free,      0.0 used. 489041.7 avail Mem 
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+      7 jovyan    20   0  426172 152456  25140 S  10.0   0.0   0:03.36 jupyter+
+      1 jovyan    20   0    2692   1424   1332 S   0.0   0.0   0:00.00 tini
+     28 jovyan    20   0 1115892  62560  46280 S   0.0   0.0   0:00.27 node
+     47 jovyan    20   0   11.3g 161604  53328 S   0.0   0.0   0:02.93 node
+     77 jovyan    20   0   21.9g 139812  55456 S   0.0   0.0   0:02.86 node
+     88 jovyan    20   0 1262440  61740  47944 S   0.0   0.0   0:00.22 node
+    109 jovyan    20   0 1061992  73960  48128 S   0.0   0.0   0:00.46 node
+    135 jovyan    20   0    8812   5532   3724 S   0.0   0.0   0:00.01 bash
+
+=================== 6. SOFTWARE ===================
+$ which mpicc mpirun mpiexec gcc
+/usr/bin/mpicc
+/usr/bin/mpirun
+/usr/bin/mpiexec
+/usr/bin/gcc
+$ mpirun --version | head -n 3
+mpirun (Open MPI) 4.1.6
+
+Report bugs to http://www.open-mpi.org/community/help/
+$ mpicc --showme 2>/dev/null || mpicc -show
+gcc -I/usr/lib/x86_64-linux-gnu/openmpi/include -I/usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -L/usr/lib/x86_64-linux-gnu/openmpi/lib -lmpi
+$ gcc --version | head -n 1
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+$ python3 --version
+Python 3.13.11
+$ md5sum src/monty_hall.c scripts/run_experimento.sh
+74362899832edf82a479ca4fa78684fe  src/monty_hall.c
+b11b45cccedb8c057f54350cc14be37e  scripts/run_experimento.sh
+
+=================== 7. PLANIFICADOR (si existe) ===================
+$ which sbatch srun squeue qsub
+(fallo o no disponible: codigo 1)
+$ sinfo 2>&1 | head -n 8
+scripts/diagnostico_cluster.sh: line 31: sinfo: command not found
+
+=================== 8. PRUEBA MPI: hola (host, rank, cpu fisico) ===================
+$ mpirun -np 4 /tmp/tmp.Qe271ol2nF/hola | sort -V
+rank 0/4 cpu=1
+rank 1/4 cpu=65
+rank 2/4 cpu=0
+rank 3/4 cpu=64
+-- sobresuscripcion: P = cores+1 = 13 (sin flags):
+OK sin flags
+
+=================== 9. MICRO-BENCHMARK CON EL SIMULADOR REAL (N=100000000, M=3, 3 repeticiones) ===================
+P a probar: 1 2 4 6 8 12
+ns/iteracion con P=1: 30.13
+P=1   mediana=   3.0134 s  min=   3.0134  max=   3.0160  speedup=  1.00  eficiencia= 1.00  dispersion=  0.1%
+P=2   mediana=   1.5085 s  min=   1.5080  max=   1.5103  speedup=  2.00  eficiencia= 1.00  dispersion=  0.2%
+P=4   mediana=   0.7552 s  min=   0.7548  max=   0.7552  speedup=  3.99  eficiencia= 1.00  dispersion=  0.0%
+P=6   mediana=   0.5039 s  min=   0.5038  max=   0.5041  speedup=  5.98  eficiencia= 1.00  dispersion=  0.0%
+P=8   mediana=   0.3789 s  min=   0.3788  max=   0.3798  speedup=  7.95  eficiencia= 0.99  dispersion=  0.3%
+P=12  mediana=   0.2541 s  min=   0.2539  max=   0.2563  speedup= 11.86  eficiencia= 0.99  dispersion=  0.9%
+
+=================== RESUMEN ===================
+cores por nproc            : 128
+cuota cgroup (cores)       : 12
+cores efectivos usados     : 12
+hilos por core (SMT)       : 1
+MPI                        : mpirun (Open MPI) 4.1.6
+planificador (sbatch/srun) : no detectado
+sobresuscripcion           : no hace falta
+benchmark:
+   ns/iteracion con P=1: 30.13
+   P=1   mediana=   3.0134 s  min=   3.0134  max=   3.0160  speedup=  1.00  eficiencia= 1.00  dispersion=  0.1%
+   P=2   mediana=   1.5085 s  min=   1.5080  max=   1.5103  speedup=  2.00  eficiencia= 1.00  dispersion=  0.2%
+   P=4   mediana=   0.7552 s  min=   0.7548  max=   0.7552  speedup=  3.99  eficiencia= 1.00  dispersion=  0.0%
+   P=6   mediana=   0.5039 s  min=   0.5038  max=   0.5041  speedup=  5.98  eficiencia= 1.00  dispersion=  0.0%
+   P=8   mediana=   0.3789 s  min=   0.3788  max=   0.3798  speedup=  7.95  eficiencia= 0.99  dispersion=  0.3%
+   P=12  mediana=   0.2541 s  min=   0.2539  max=   0.2563  speedup= 11.86  eficiencia= 0.99  dispersion=  0.9%
