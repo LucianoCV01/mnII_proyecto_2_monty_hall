@@ -1,6 +1,6 @@
 # Plan de Desarrollo: Proyecto 2 - Monty Hall (HPC)
 
-> **Última actualización:** 30/09/2026. Cambios principales: Fase 2 confirmada, alcance reducido a Mac M1 + clúster, generador propio (`splitmix64`) y nuevos Problemas #5 y #6, y justificación documentada de `MPI_Barrier` (Sección 5.2). Ver Sección 13 (Registro de cambios). Lo marcado **[PENDIENTE]** se completa tras la corrida final (v2).
+> **Última actualización:** 03/10/2026. Se incorpora el Experimento 3 (fase B): barrido continuo de $P=1\dots28$ en el clúster, con un modelo del overhead de sincronización y su validación estocástica (Sección 6.3). Se cierran antes los resultados experimentales de Mac y clúster (Problemas #5 y #6), `-O2` vs. `-O3` y la corrida espejo. Ver Sección 13 (Registro de cambios). Queda como trabajo futuro, no bloqueante, la prueba con y sin `MPI_Barrier` (Sección 5.2).
 
 ## 1. Descripción General y Objetivos
 
@@ -194,7 +194,10 @@ Se incluyó a propósito el caso $N=10.000.000$, $P=8$, donde $N$ es múltiplo e
 | CSV real v1, Mac (100 corridas, $P=1..8$) | $-4{,}06\times10^{-5}$ | 100 de 100 negativas, $t\approx-24$ |
 | Harness con `do_rand` (8 semillas) | $-4{,}14\times10^{-5}$ | 8 de 8 negativas, $t\approx-27$ |
 | Harness con `splitmix64` (8 semillas) | $+0{,}87\times10^{-5}$ | $t\approx+1{,}7$, compatible con 0 |
-| Corrida final v2 (Mac / clúster) | **[PENDIENTE]** | criterio: $\lvert t\rvert<2$ con ≥ 30 corridas |
+| Corrida final v2, Mac ($M=3,5,10,50$) | con $N=10^9$ (80 corridas por celda): $t=-0{,}11;\ 0{,}38;\ -0{,}11;\ 0{,}41$ | de 20 celdas $(M,N)$, 1 con $\lvert t\rvert>2$ (máx. 2,02; esperado ≈ 0,9) y ninguna $>3$; sin signo sistemático (11 de 20 medias positivas). Diferencias con $N=10^9$ (corridas combinadas): de $-1{,}8\times10^{-7}$ a $+5{,}3\times10^{-7}$; para $M=3$, IC 95 % $[-3{,}5;\,+3{,}1]\times10^{-6}$ (el sesgo anterior queda descartado por un factor ≈ 11) |
+| Corrida final v2, clúster | con $N=10^9$ (40 corridas por celda): $t=-0{,}18;\ 0{,}78;\ -0{,}12;\ -0{,}59$ | 0 de 20 celdas con $\lvert t\rvert>2$ (máx. 1,55); sin signo sistemático (8 de 20 medias positivas); IC 95 % de $\bar z$ para $M=3$, $N=10^9$: $[-0{,}34;\,+0{,}28]$, frente a $\approx-2{,}7$ del sesgo anterior |
+
+**Estado: cerrado.** Con el generador propio, la probabilidad empírica coincide con $(M-1)/M$ dentro del error estadístico para $M=3,5,10,50$ y hasta $N=10^9$, en la Mac y en el clúster (criterio $\lvert t\rvert<2$ cumplido en la celda más sensible, $M=3$ y $N=10^9$: $t=-0{,}11$ y $t=-0{,}18$). La única celda con $\lvert t\rvert>2$ (Mac, $M=3$, $N=10^8$, $t=+2{,}02$, signo opuesto al sesgo anterior) es compatible con el azar: $p\approx0{,}043$ y ≈ 59 % de probabilidad de observar al menos una así entre 20 celdas. Detalle en el notebook (Paso 6 y Paso 6.1b).
 
 El sesgo también existe, mucho menor, para los otros valores de $M$ de la Fase 2 (recorrido del ciclo completo): $M=5$: $-4\times10^{-10}$; $M=10$: $-6{,}0\times10^{-6}$; $M=50$: $-1{,}2\times10^{-6}$. Es decir, el caso obligatorio $M=3$ era el más afectado. Salida guardada en `diagnostico/resultados/problema5_resultados.txt`. El CSV con el generador anterior se conserva como `resultados_mac_v1.csv` para documentar el antes y el después.
 
@@ -206,7 +209,17 @@ El sesgo también existe, mucho menor, para los otros valores de $M$ de la Fase 
 | **Causa raíz** | La semilla base se obtenía con `time(NULL)` (resolución de 1 s), llamado por separado en cada rank y sin registrarse en el CSV. Las corridas que caen en el mismo segundo repiten la semilla, y ninguna corrida era reproducible. |
 | **Cómo se detectó** | Análisis del CSV v1: cantidad de valores distintos de `victorias_cambiando` por celda $(N,P)$. |
 | **Solución aplicada** | El rank 0 genera una semilla de 64 bits desde `clock_gettime` (nanosegundos), la difunde con `MPI_Bcast` y se imprime como columna `semilla`. |
-| **Cómo se verifica** | En v2, cantidad de semillas distintas igual a la cantidad de filas: **[PENDIENTE]**. |
+| **Cómo se verifica** | En v2: 1600 semillas distintas en 1600 corridas (Mac) y 800 en 800 (clúster). **Cerrado.** |
+
+#### Problema #7: Corridas superpuestas y sobresuscripción en el clúster
+
+| Campo | Detalle |
+|---|---|
+| **Síntoma** | `run_experimento.sh` se lanzó dos veces en la misma terminal del clúster (PIDs 2738 y 16553) porque la primera parecía estancada. Las dos instancias corrían en paralelo y escribían en el mismo CSV. |
+| **Causa raíz** | (1) El script no impedía instancias concurrentes: ambas competían por la cuota de 12 cores y falseaban los tiempos. (2) `nproc` informa 128 (nodo físico), no la cuota del contenedor (12), y Open MPI acepta $P$ mayor que la cuota sin advertencia (verificado con $P=13$); el riesgo de sobresuscripción solo se evitaba pasando `P_MAX` a mano. Parte de la lentitud percibida era esperable: con 30,1 ns por iteración en un core, una ronda completa lleva ≈ 6 min (≈ 1 h con 10 repeticiones). |
+| **Cómo se detectó** | `pgrep`/`ps` y el script `diagnostico_cluster.sh`. Nota: durante cada corrida `ps` muestra un subproceso `bash` con el mismo comando que el script (la captura de salida con `$(...)`); no es una segunda instancia. |
+| **Solución aplicada** | Lock de una sola corrida (`analisis/datos/.lock_corrida`, con verificación del PID); lectura de `cpu.max` del cgroup y tope de `P_MAX` (aborta si lo supera, salvo `PERMITIR_SOBRESUSCRIPCION=1`). Los datos de la corrida contaminada no se usan. |
+| **Cómo se verifica** | Pruebas con MPI y cuota simulados: tope 128 → 12, rechazo de $P=13$, rechazo de una segunda instancia simultánea y liberación del lock. En el clúster real la corrida válida fue una única instancia y el CSV tiene las 800 filas esperadas (5 $N$ × 8 $P$ × 4 $M$ × 5 repeticiones); el lock no se ejercitó con una segunda instancia real, solo en simulación. |
 
 ### 5.2 Decisiones de Diseño Justificadas
 
@@ -227,9 +240,9 @@ Se optó por una salida de datos agregada (una línea CSV por ejecución) en lug
 
 **Por qué se mantiene:** como solo el rank 0 reporta tiempo, sin barrera su cronómetro arrancaría antes o después que el de los demás según el orden de arranque, y el sesgo puede ir en **cualquier sentido**: si arranca primero, mide de más (speedup menor); si arranca último, mide de menos (speedup **optimista**). La barrera fija un origen común. El sesgo residual es la dispersión con que los ranks salen de la barrera (del orden de microsegundos), despreciable frente al cómputo salvo con $N=10^5$ ($T_p\approx0{,}3$ ms), valor que ya se descartó para juzgar escalabilidad.
 
-**El overhead observado no proviene de la barrera ni de la comunicación.** Con los datos v1 de la Mac ($N=10^9$), el overhead $T_p - T_1/P$ va de 0,17 s ($P=2$) a 0,48 s ($P=8$), y con $P=8$ crece ≈ 8,5 veces al pasar de $N=10^8$ (0,056 s) a $N=10^9$ (0,476 s). Una barrera o una reducción cuestan microsegundos a milisegundos, independientes de $N$; un overhead que crece con el trabajo es compatible con $T_{idle}$ por heterogeneidad (el reparto equitativo de *iteraciones* no equivale a un reparto equitativo de *tiempo* entre P-cores y E-cores). No permite separar ese efecto de otros que también crecen con $N$ (frecuencia por núcleo, térmicos); para eso harían falta tiempos por rank.
+**El overhead observado no proviene de la barrera ni de la comunicación.** Con los datos v1 de la Mac ($N=10^9$), el overhead $T_p - T_1/P$ va de 0,17 s ($P=2$) a 0,48 s ($P=8$), y con $P=8$ crece ≈ 8,5 veces al pasar de $N=10^8$ (0,056 s) a $N=10^9$ (0,476 s). Una barrera o una reducción cuestan microsegundos a milisegundos, independientes de $N$; un overhead que crece con el trabajo es compatible con $T_{idle}$ por heterogeneidad (el reparto equitativo de *iteraciones* no equivale a un reparto equitativo de *tiempo* entre P-cores y E-cores). No permite separar ese efecto de otros que también crecen con $N$ (frecuencia por núcleo, térmicos); para eso harían falta tiempos por rank. Con los datos v2 (Mac, $M=3$, $N=10^9$), el overhead pasa de 0,026 s con $P=4$ a 0,25 s con $P=8$, y con $P=8$ vuelve a crecer en proporción a $N$ (0,031 s con $N=10^8$ y 0,248 s con $N=10^9$, ≈ 7,9 veces), lo que confirma la conclusión. En el clúster (Experimento 3, Sección 6.3), con $P=28$ el overhead medido es de 43 a 57 µs para $N=10^4$ a $10^6$ y de 4,5 ms con $N=10^9$ (0,4 % de $T_p$), unas 55 veces menos que los 0,25 s de la Mac con $P=8$ y $N=10^9$: ni la barrera ni la reducción explican la meseta de la Mac.
 
-**Verificación no realizada (requisito futuro) [PENDIENTE]:** la prueba con y sin barrera **no se ejecutó**; esta justificación se apoya en el razonamiento y en los datos anteriores, no en una medición directa. Procedimiento previsto:
+**Verificación no realizada (requisito futuro, no bloqueante):** la prueba con y sin barrera **no se ejecutó**; esta justificación se apoya en el razonamiento y en los datos anteriores, no en una medición directa. Procedimiento previsto:
 1. Condicionar la barrera con una variable de entorno (`if (getenv("MH_SIN_BARRERA") == NULL) MPI_Barrier(MPI_COMM_WORLD);`), correr en Mac con etiqueta `mac_sinbarrera` y comparar medianas **y dispersión** (IQR) del speedup. Expectativa, no medida: sin diferencia sistemática con $N$ grande y mayor dispersión sin barrera con $N$ chico.
 2. Calcular el speedup con tiempo de pared (`/usr/bin/time -p mpirun ...`) para cuantificar el costo de lanzamiento que la región cronometrada excluye.
 
@@ -245,7 +258,7 @@ Para consolidar los contadores locales de victorias en el proceso raíz, se desc
 
 Se evaluó explícitamente si subir a `-O3` (que habilita además *loop unrolling* agresivo y *loop peeling*, según `gcc -Q --help=optimizers`) mejoraría el rendimiento del núcleo de la simulación, dado que se trata de un bucle numérico intensivo. Se midió directamente en vez de asumirlo: compilando el mismo bucle con `-O0`, `-O2` y `-O3`, el tiempo por iteración se mantuvo estable en las tres (~37-38 ns/iteración), sin diferencia significativa. La causa: el cuello de botella no es aritmética vectorizable, sino la llamada a `rand()` de la libc, que mantiene estado interno global y contiene ramas de control — el propio compilador reporta explícitamente `"couldn't vectorize loop: control flow in loop"` y `"statement clobbers memory: rand()"` al pedirle el detalle de vectorización (`-fopt-info-vec-all`). Ni `-O2` ni `-O3` pueden vectorizar ni desenrollar de forma útil una llamada a función opaca con efectos colaterales. Se mantiene `-O2` por ser el estándar razonable para este nivel de código, sin costo de rendimiento medible frente a `-O3` en este caso puntual.
 
-**Nota posterior (generador propio):** esta medición se hizo con `rand()`, una llamada opaca con estado global. Con `splitmix64` (inline, sin llamadas opacas) esa justificación ya no aplica textualmente, por lo que la comparación `-O2` vs. `-O3` debe repetirse con el código final. Datos tomados en la Mac con $M=3$: `resultados_mac_v2.csv` (`-O2`) y `resultados_mac_v2_O3.csv` (`-O3`); **análisis [PENDIENTE]**. Además, **[REVISAR]** la cifra de ~37-38 ns/iteración difiere de los ≈14,3 ns/iteración que muestra el CSV v1 a $P=1$ ($N\ge10^7$); confirmar qué configuración produjo cada una antes de citarlas juntas.
+**Nota posterior (generador propio):** esta medición se hizo con `rand()`, una llamada opaca con estado global. Con `splitmix64` (inline, sin llamadas opacas) esa justificación ya no aplica textualmente, por lo que la comparación `-O2` vs. `-O3` debe repetirse con el código final. **Resultado** (Mac, $M=3$, $N=10^9$, 10 repeticiones por $P$; `resultados_mac_v2.csv` para `-O2` y `resultados_mac_v2_O3.csv` para `-O3`): el cociente $T_p^{-O3}/T_p^{-O2}$ queda entre 0,983 y 1,014 (diferencia máxima 1,72 %), sin signo consistente (con $P=1$, `-O3` es 0,6 % más lento) y del orden de la dispersión entre repeticiones; las curvas de speedup se superponen (meseta de ≈ 3,7 a 3,9 para $P>4$ en ambos casos). **Conclusión: `-O3` no produce una mejora medible; se mantiene `-O2`.** Alcance: solo Mac. Hipótesis (no verificada): el `% puertas` con divisor variable y la bifurcación `eleccion != premio` impiden una vectorización útil. La cifra de ~37-38 ns/iteración de la medición original no coincide con los ≈ 14,3 ns/iteración del CSV v1 a $P=1$ ($N\ge10^7$) y no se pudo identificar qué configuración produjo cada una, por lo que no se cita. Valores vigentes con $P=1$ (v2): ≈ 1,79 ns/iteración en la Mac y ≈ 30,1 ns en el clúster.
 
 ### 5.3 Propiedades Caracterizadas Empíricamente
 
@@ -286,25 +299,27 @@ La simulación de la versión anterior de este documento (que reimplementaba `do
 
 **Por qué esto sí afectaba al experimento real:** el sesgo no depende de $N/P$ ni del número de procesos, por lo que contaminaba todas las corridas con $N\ge10^8$ de la barrida completa, y no solo el caso extremo de $P=1$. La corrección (generador propio, Sección 4) se valida en la corrida v2.
 
-**Conclusión:** los datos propios confirman $O(1/\sqrt{N})$ mientras $SE$ sea mucho mayor que el sesgo (aprox. $N\lesssim10^8$). Más allá, con el generador anterior el error se estanca en ≈ $4\times10^{-5}$: efecto del sesgo del generador (Problema #5), no propiedad del método. Con el generador propio se espera que la curva siga $O(1/\sqrt{N})$ hasta $N=10^9$: **[PENDIENTE de confirmar con la corrida v2]**.
+**Conclusión:** los datos propios confirman $O(1/\sqrt{N})$ mientras $SE$ sea mucho mayor que el sesgo (aprox. $N\lesssim10^8$). Más allá, con el generador anterior el error se estanca en ≈ $4\times10^{-5}$: efecto del sesgo del generador (Problema #5), no propiedad del método. Con el generador propio, la corrida v2 en Mac lo confirma cualitativamente: la mediana del error sigue $0{,}6745\,SE$ hasta $N=10^9$ para $M=3,5,10,50$ (cociente empírico/teórico entre 0,88 y 1,14, compatible con el ruido de una mediana de 80 valores, ≈ 13 %). La cuantificación formal mediante el test de sesgo por $(M,N)$ (Problema #5) lo confirma en Mac y clúster: ninguna celda con $\lvert t\rvert>3$ y, con $N=10^9$, $t$ entre $-0{,}59$ y $0{,}78$. La pendiente log-log no se ajustó explícitamente: la comparación es contra la curva $0{,}6745\,SE$.
 
 ## 6. Plan de Pruebas y Hardware
 
 | Entorno | Arquitectura | Objetivo de la Prueba |
 |---|---|---|
 | Mac M1 | ARM (Heterogénea P-cores / E-cores) | Observar caídas de rendimiento al usar núcleos de eficiencia. |
-| Clúster de la Facultad | Nodos distribuidos | Medir el costo real de comunicación en red; entorno donde correrán los experimentos de mayor escala. |
+| Clúster de la Facultad | AMD EPYC 7B12 (x86; 2 sockets × 64 cores, SMT = 1); nodo único en contenedor; corrida espejo con cuota de 12 cores (garantía 6) y Experimento 3 con 48 cores (192 GB) | Contrastar con un entorno de núcleos homogéneos y correr los experimentos de mayor escala. Sin red entre nodos: Open MPI usa memoria compartida. |
 
 La notebook Windows (x86) quedó fuera del alcance (Sección 1). No se realiza comparación con una arquitectura simétrica; la Ley de Amdahl se contrasta con la curva de cada uno de los dos entornos.
 
 > **Hipótesis arquitectónicas esperadas (a contrastar empíricamente):**
-> - **Mac M1 (ARM Heterogéneo):** se anticipa una caída de eficiencia cuando $P$ supere la cantidad de núcleos de alto rendimiento (P-cores) y MPI comience a asignar carga a los núcleos de eficiencia (E-cores). *Resultado preliminar (v1):* eficiencia ≥ 0,93 hasta $P=4$ y caída en $P=5$ (0,58 a 0,79 en $P=8$ según $N$), compatible con la hipótesis; la causa exacta (desbalance vs. comunicación) no se aisló, porque no se miden tiempos por rank. El speedup se **recalcula con la versión final**, ya que el nuevo generador cambia $T_1$.
-> - **Clúster de la Facultad (Memoria Distribuida):** se espera que el overhead de red en las primitivas de comunicación de MPI se vuelva perceptible a medida que $P$ escale, a diferencia del entorno local.
+> - **Mac M1 (ARM Heterogéneo):** se anticipaba una caída de eficiencia cuando $P$ supere la cantidad de P-cores y MPI comience a asignar carga a los E-cores. *Resultado (v2, $M=3,5,10,50$):* eficiencia 0,90 a 1,00 hasta $P=4$ y caída abrupta en $P=5$ (0,38 a 0,75 según $N$). Con $N=10^9$, $S_4\approx3{,}78$ y $S_8\approx3{,}80$ ($E\approx0{,}48$ con $P=8$): los E-cores no aportan ganancia medible, y con $N\le10^8$ usar 8 procesos es más lento que usar 4. **$P=4$ es el punto óptimo.** En la v1 (con `rand()`) los E-cores sí aportaban ($S_8\approx6{,}3$). *Hipótesis (no probada):* con reparto estático $N/P$ el proceso del núcleo más lento fija el tiempo, y el bucle v2 (corto, con mucho paralelismo a nivel de instrucciones) penaliza más a los E-cores que el bucle v1 (limitado por la latencia de `rand()`). Karp-Flatt ($N=10^9$): fracción serial efectiva ≈ 0,02 para $P\le4$ y de 0,09 ($P=5$) a 0,16 ($P=8$). La causa exacta (desbalance vs. comunicación) sigue sin aislar: faltan tiempos por rank.
+> - **Clúster de la Facultad (nodo único, núcleos homogéneos):** se esperaba escalado casi ideal mientras $P$ no supere la cuota de CPU. *Resultado (corrida espejo, $M=3,5,10,50$, $P\le8$, 5 repeticiones):* speedup prácticamente lineal y eficiencia ≈ 0,998 con $N=10^9$ (entre 0,94 y 0,99 con $N=10^5$), sin codo; $T_1\approx30{,}1$ s con $N=10^9$ (≈ 30 ns por iteración). El diagnóstico previo (nodo casi ocioso) había mostrado $E\approx0{,}99$ hasta $P=12$. Esto contrasta con la Mac y respalda la hipótesis de P-cores y E-cores. La hipótesis original de overhead de red **no aplica** (un solo nodo). La corrida llegó a $P=8$, por encima de los 6 cores garantizados, sin degradación visible; la carga del nodo durante la corrida no se registró. El Experimento 3 (Sección 6.3) extendió el barrido hasta $P=28$ con $E_p\approx0{,}996$ para $N=10^9$.
 
-En los dos entornos se compilará y ejecutará con **gcc** (`mpicc -O2`), mismo código fuente. **[COMPLETAR]** Mecanismo de lanzamiento en el clúster (gestor de colas o `mpirun` directo), núcleos por nodo, cantidad de nodos disponibles y versión de MPI; `nproc` en el nodo de login no representa la asignación real.
+En los dos entornos se compilará y ejecutará con **gcc** (`mpicc -O2`), mismo código fuente. **Mecanismo de lanzamiento en el clúster** (diagnóstico del 01/10/2026, `diagnostico_cluster.sh`): JupyterHub (VS Code web) sobre Kubernetes, sin gestor de colas (no hay `sbatch` ni `srun`); `mpirun` directo (Open MPI 4.1.6), `gcc` 13.3 y Python 3.13. Recurso elegido: 12 cores (`cpu.max` = 12, garantía 6, memoria 48 GiB); `nproc` informa 128 (nodo físico). Open MPI acepta $P$ mayor que la cuota sin advertencia (verificado con $P=13$), por lo que `P_MAX` es obligatorio: el script V2 ya lo limita (Problema #7). Para $P$ hasta 28 (Experimento 3) se usó una sesión de 192 GB y 48 cores, la opción mínima que lo permite; no se registraron `cpu.max` ni la garantía de cores de esa sesión.
+
+**Comparación cruzada** (notebook, Pasos 6.2 y 6.3; $N=10^9$, $M=3$): $T_1\approx1{,}79$ s en la Mac frente a ≈ 30,1 s en el clúster (la Mac es ≈ 17 veces más rápida por núcleo con este código; causa no medida, hipótesis de las divisiones de 64 bits en Zen 2); eficiencia con $P=8$: ≈ 0,47 en la Mac frente a ≈ 0,998 en el clúster; $P$ óptimo: 4 en la Mac y al menos 28 en el clúster (Experimento 3, Sección 6.3).
 
 **Variables experimentales a barrer:**
-1. Número de procesos $P$ (escalado fuerte, variable principal).
+1. Número de procesos $P$ (escalado fuerte, variable principal). Mac y corrida espejo del clúster: $P=1\dots8$; Experimento 3 (clúster): $P=1\dots28$ (Sección 6.3).
 2. Tamaño del problema $N$ — ajustado empíricamente, sin valores fijos predefinidos.
 3. Cantidad de puertas $M$ (Fase 2, confirmada — Sección 12): $M = 3, 5, 10, 50$.
 
@@ -315,9 +330,34 @@ Se había planteado comparar `int64_t` contra el tipo nativo en el clúster. Con
 ### 6.2 Diseño del barrido de $M$ (Fase 2)
 
 - Se ejecuta `run_experimento.sh` una vez por cada valor de $M$ (3, 5, 10, 50), con el mismo barrido de $N$ y $P$, acumulando todo en el mismo CSV (la columna `M` distingue los casos). En el clúster se puede acotar con la lista de $N$ y el paso de $P$ del script.
-- El objetivo de la Fase 2 es la **validación estadística** frente a $(M-1)/M$; el análisis de speedup se hace con $M=3$ (se supone que el costo por iteración no cambia con $M$; **[A VERIFICAR]** comparando $T_1$ por $M$ en el CSV v2).
+- El objetivo de la Fase 2 es la **validación estadística** frente a $(M-1)/M$; el análisis de speedup se hace con $M=3$ (se supone que el costo por iteración no cambia con $M$; **verificado** en la Mac v2: con $N=10^9$, $T_1$ difiere menos de 0,25 % entre $M=3,5,10,50$ (1,7894; 1,7893; 1,7917; 1,7938 s) y el speedup difiere menos de ≈ 5 %).
 - Criterio de validación por $(N,M)$: $z=(\hat p-p)/SE$ por corrida; se espera media de $z$ compatible con 0 y ≈ 95 % de las corridas con $\lvert z\rvert<2$. Se grafica $\hat p$ vs. $p$ por $M$ (barras) y el error normalizado vs. $N$.
 - Con el generador anterior el sesgo era mayor en $M=3$ que en $M=5,10,50$ (Problema #5); con el propio se espera ausencia de sesgo en los cuatro casos.
+
+### 6.3 Experimento 3 (fase B): barrido continuo de $P=1\dots28$ en el clúster
+
+**Diseño.** `scripts/run_amdahl.sh` en una sesión de 192 GB de RAM y 48 cores (la opción mínima que permite $P=28$; la RAM no interviene). $N\in\{10^4,\dots,10^9\}$ × $P=1\dots28$ sin huecos (requisito de cátedra) × 3 repeticiones, con $M=3$, `-O2` y el mismo `monty_hall.c`: 504 corridas. El script escribe `amdahl_<fecha>.csv` (renombrado a `resultados_amdahl.csv`), usa la repetición como bucle exterior y registra un log y el conteo de filas. No tiene lock ni tope por cuota de CPU (se lanzó una sola vez); si se reutiliza, conviene incorporar las protecciones de `run_experimento.sh`.
+
+**Integridad.** 504 filas, 168 combinaciones $(N,P)$ con 3 repeticiones cada una, sin nulos, 504 semillas distintas y victorias que suman $N$. Tasa $\lvert z\rvert<2$: 95,44 %; $t$ por $N$ entre $-0{,}75$ y $1{,}59$ (ninguno $>2$): sin evidencia de sesgo.
+
+**Resultados** (mediana de las repeticiones):
+
+| $N$ | $P^*$ observado | $S_p^*$ | $E_p$ con $P=28$ | Karp-Flatt $e(28)$ | Overhead con $P=28$ |
+|---|---|---|---|---|---|
+| $10^4$ | ≈ 15 (orientativo) | 8,0 | 0,20 | 0,147 | 43 µs |
+| $10^5$ | 27 (orientativo) | 20,0 | 0,68 | 0,017 | 50 µs |
+| $10^6$ | 28 | 26,6 | 0,95 | 0,0020 | 57 µs |
+| $10^7$ | 28 | 27,6 | 0,987 | 0,0005 | 142 µs |
+| $10^8$ | 28 | 27,9 | 0,995 | 0,0002 | 550 µs |
+| $10^9$ | 28 | 27,9 | 0,996 | 0,00015 | 4,5 ms |
+
+**Modelo del overhead.** Con $N=10^4$ y $10^5$, el overhead $T_p-T_1/P$ es casi el mismo y crece aproximadamente de forma lineal con $P$: ≈ 6,0 µs + 1,54 µs·$P$ ($R^2=0{,}82$). Con $T_p\approx T_1/P+c_0+\alpha P$ el óptimo es $P^*\approx\sqrt{T_1/\alpha}$: ≈ 14 para $N=10^4$ (observado: 15), ≈ 44 para $N=10^5$ y ≈ 140 para $N=10^6$ (estos dos, fuera del barrido). El modelo predice $S(28)$ de 5,06 frente a 5,63 observado ($-10\,\%$, $N=10^4$), 19,27 frente a 19,12 ($+0{,}8\,\%$, $N=10^5$) y 26,78 frente a 26,59 ($+0{,}7\,\%$, $N=10^6$, fuera de la muestra de ajuste).
+
+**Lectura.** La parte no paralelizable es un costo de sincronización y reducción casi independiente de $N$ y creciente con $P$, y no una fracción fija del programa. Por eso la fracción secuencial efectiva se diluye al crecer $N$ ($e(28)$ de 0,147 a 0,00015), como predice Amdahl para una parte serial de tiempo aproximadamente fijo. Para $N\ge10^7$ el overhead es de 0,1 a 0,6 % de $T_p$ y no crece con $P$. En contraste con la Mac, donde con $P=8$ y $N=10^9$ el overhead fue de 0,25 s (Sección 5.2), el clúster escala casi linealmente hasta $P=28$ con el mismo código.
+
+**Uso de recursos.** El tiempo de cómputo medido suma ≈ 6,6 min (≈ 0,78 core-horas); la reserva fue de 48 cores durante la sesión.
+
+**Limitaciones.** (1) 3 repeticiones por punto y reloj de 1 µs: los $P^*$ de $N\le10^5$ son orientativos (con $N=10^4$ los tiempos son de 32 a 60 µs). (2) Con $N=10^6$ y $P$ bajos, el overhead queda tapado por la dispersión entre repeticiones y solo se mide con $P$ alto. (3) No se registraron `cpu.max`, la garantía de cores de esa sesión ni la carga del nodo; por analogía con la sesión de 12 cores (garantía 6) sería 24, no verificado, y con $P=28$ no hubo degradación visible. (4) El overhead agrupa la barrera, la reducción y el desfase de arranque de los procesos, que no se pueden separar. (5) El modelo es una hipótesis ajustada a medianas.
 
 ## 7. Verificación de Toolchain
 
@@ -332,6 +372,7 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 - **Validación contra la teoría:** probabilidad empírica $\hat{p}_{cambiar} = \text{victorias\_cambiando}/N$, probabilidad teórica $(M-1)/M$, y error absoluto entre ambas, calculados en C y exportados al CSV. Ver Sección 5.3 para la caracterización empírica de cómo converge este error con $N$.
 - **Independencia y registro de semillas:** cada corrida usa una semilla distinta, registrada en el CSV (Problema #6). Las repeticiones son, por lo tanto, estadísticamente independientes.
 - **Versiones de datos:** `resultados_mac_v1.csv` (generador anterior, 9 columnas) se conserva como evidencia del Problema #5; la versión final (10 columnas, con `semilla`) se guarda en `resultados_mac_v2.csv` (`-O2`) y `resultados_mac_v2_O3.csv` (`-O3`). El script V2 aborta si el encabezado de un archivo existente no coincide, por lo que no se mezclan versiones. El notebook debe agrupar por $(M,N,P)$ y no suponer $M$ único.
+- **Repeticiones:** Mac, 10 por $(M,N,P)$; clúster, 5 (dispersión < 1 % en el diagnóstico). Las medianas son comparables, pero los datos del clúster tienen menos muestras para el error.
 - **Test de sesgo:** para cada $(N,M)$, media del error firmado sobre las repeticiones distintas y estadístico $t=\bar e\,\sqrt{n}/SE$ (aproximado, pues comparten generador).
 
 ## 9. Limitaciones Identificadas
@@ -340,10 +381,14 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 - **Generador de números aleatorios:** `splitmix64` es un generador de propósito general, no criptográfico, sin garantías estadísticas tan estudiadas como otros (p. ej. `xoshiro256**` o Random123, Salmon et al. 2011, en la bibliografía); se valida empíricamente (Problema #5, corrida v2). El generador anterior (`rand()` de la libc) se descartó por su sesgo.
 - **Sesgo de módulo:** con `% M` sobre 64 bits es ≈ $5\times10^{-20}$, despreciable para los valores de $M$ usados.
 - **Comparación de tiempos entre arquitecturas:** solo tiene sentido comparar la forma de la curva de speedup por sistema, no los tiempos absolutos entre sistemas distintos.
-- **Alcance de plataformas:** solo Mac M1 y clúster. Sin arquitectura x86 simétrica local, la hipótesis de curva "regular" de Amdahl no se contrasta contra una tercera plataforma.
-- **Origen del codo en $P=5$ (Mac):** sin tiempos por rank no se puede atribuir con certeza a desbalance por E-cores frente a costo de comunicación; se reporta como hipótesis consistente con los datos.
+- **Alcance de plataformas:** solo Mac M1 y clúster. El clúster (homogéneo, un solo nodo) sirve de contraste con la Mac heterogénea, pero no se mide comunicación entre nodos.
+- **Origen del codo en $P=5$ (Mac):** sin tiempos por rank no se puede atribuir con certeza a desbalance por E-cores frente a costo de comunicación; los datos v2 (speedup plano entre $P=4$ y $P=8$ y overhead proporcional a $N$) son consistentes con desbalance. La explicación por paralelismo a nivel de instrucciones es una hipótesis no probada.
+- **Costo por iteración en el clúster:** 30,1 ns con un core (diagnóstico, $N=10^8$) frente a 1,79 ns en la Mac v2 (≈ 17 veces). Hipótesis, no medida: las dos divisiones de 64 bits de `% puertas` son lentas en Zen 2 y rápidas en el M1. Prueba opcional, sin tocar el experimento: una variante sin divisiones y comparar $T_1$.
+- **Cuota de CPU del clúster:** garantía de 6 cores y tope de 12. Las medidas del diagnóstico se tomaron con el nodo casi ocioso (carga 0,16) y en la corrida espejo no se registró la carga; con $P\le8$ no hubo degradación visible. Conviene registrar `uptime` al iniciar cada corrida. En el Experimento 3 (48 cores) no se registró la garantía de cores ni la carga del nodo; con $P=28$ no hubo degradación visible.
 - **Orden de las corridas:** en la v1 las repeticiones de cada configuración eran consecutivas y $P=1$ abría cada bloque de $N$, lo que podía asociar el estado térmico y de frecuencia a una sola configuración. El script V2 pone la repetición como bucle exterior, lo que mitiga este efecto (no se verificó empíricamente).
 - **Barrera previa sin verificación empírica:** la decisión de mantener `MPI_Barrier` antes del cronómetro se justifica por razonamiento y por los datos v1 (Sección 5.2), pero la prueba con y sin barrera no se ejecutó. El speedup reportado es el de la región paralela y excluye el lanzamiento de procesos.
+- **Potencia del test de sesgo:** con $n=80$ (Mac) y $n=40$ (clúster) corridas por celda $(M,N)$, el test no descarta sesgos menores que ≈ $3\times10^{-6}$ (Mac, $M=3$, $N=10^9$, IC 95 %); sí descarta el sesgo del generador anterior ($-4\times10^{-5}$) por un factor ≈ 11. En el clúster detecta $\bar z\gtrsim0{,}5$. Además, con 20 celdas por plataforma es esperable ≈ 1 resultado con $\lvert t\rvert>2$ por azar.
+- **Experimento 3:** 3 repeticiones por punto y reloj de 1 µs; los $P^*$ de $N\le10^5$ son orientativos y el modelo del overhead está ajustado a medianas con $R^2=0{,}82$ (Sección 6.3).
 - **Supuesto sobre la regla del presentador:** válido para la variante "abre todas las puertas salvo una"; la variante alternativa queda fuera de alcance salvo indicación contraria de la cátedra (Sección 12).
 
 ## 10. Próximos Pasos (orden de prioridad, por etapas)
@@ -364,15 +409,15 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 9. ✅ Versión 1 del simulador con las cuatro correcciones iniciales (`int64_t`, hashing de semilla, `rand()`, balanceo con resto), compilada con `-O2`. Sus datos (`resultados_mac_v1.csv`) se conservan como evidencia.
 10. ✅ Script de automatización `run_experimento.sh`: barrido de $N$ y de $P$ (todos los enteros de 1 al máximo de núcleos), 10 repeticiones por combinación.
 11. ✅ Escalado fuerte v1 corrido en Mac M1 y analizado (notebook). **Windows: fuera del alcance.**
-12. ✅ **Versión final (v2) del simulador** (`src/monty_hall.c`): `splitmix64` en vez de `rand()` (Problema #5), semilla de 64 bits difundida y registrada (Problema #6), salida con 10 decimales; compilada con `mpicc -O2` por el script. La prueba corta previa ($P=1,4$, $N=10^6$, $M=3,5$) no se ejecutó como paso separado; el resumen final del script (semillas distintas = filas) sirve de verificación **[PENDIENTE: confirmar el resultado]**.
+12. ✅ **Versión final (v2) del simulador** (`src/monty_hall.c`): `splitmix64` en vez de `rand()` (Problema #5), semilla de 64 bits difundida y registrada (Problema #6), salida con 10 decimales; compilada con `mpicc -O2` por el script. La prueba corta previa ($P=1,4$, $N=10^6$, $M=3,5$) no se ejecutó como paso separado; la verificación equivalente se hizo en el notebook: 1600 semillas distintas en 1600 corridas (Mac) y 800 en 800 (clúster).
 13. ✅ (ya no necesario) Mover el CSV de la v1: el script V2 escribe en `resultados_mac_v2.csv` (y `_O3`), no toca la v1 y aborta ante un encabezado distinto. Renombrar la v1 a `resultados_mac_v1.csv` queda solo por claridad.
-14. ✅ **Ejecutado en Mac:** `bash scripts/run_experimento.sh "" 3,5,10,50` ($M=3,5,10,50$, barrido completo de $N$ y $P$, salida `resultados_mac_v2.csv`) y `bash scripts/run_experimento.sh "" 3 10 1 "" -O3` ($M=3$, salida `resultados_mac_v2_O3.csv`). ⏳ **Análisis pendiente:** sesgo y validación empírico-teórica por $M$, $T_1$ por $M$ (supuesto de la Sección 6.2) y `-O2` vs. `-O3` (Sección 5.2).
+14. ✅ **Ejecutado en Mac:** `bash scripts/run_experimento.sh "" 3,5,10,50` ($M=3,5,10,50$, barrido completo de $N$ y $P$, salida `resultados_mac_v2.csv`) y `bash scripts/run_experimento.sh "" 3 10 1 "" -O3` ($M=3$, salida `resultados_mac_v2_O3.csv`). ✅ **Analizado en el notebook (Mac v2):** escalado fuerte, $T_1$ por $M$ (supuesto de la Sección 6.2 verificado) y convergencia del error. ✅ **Completado:** test formal de sesgo por $(M,N)$ (Problema #5), barras empírico vs. teórico con $N=10^9$, `-O2` vs. `-O3` (sin mejora; Sección 5.2) y comparación v1 vs. v2.
 14 bis. ⏳ **(Futuro, no bloqueante)** Prueba con y sin `MPI_Barrier` y comparación con tiempo de pared: no ejecutada; justificación y procedimiento en la Sección 5.2.
-15. ⏳ Documentar el acceso y el mecanismo de lanzamiento en el clúster (Sección 6); adaptar el script si hace falta (cola, asignación de núcleos) y correr el mismo experimento ($M=3$ y Fase 2).
-16. ⏳ Actualizar el notebook: agrupar por $(M,N,P)$, agregar la columna `semilla`, gráfico de barras empírico vs. teórico por $M$, error normalizado vs. $N$, y test de sesgo. Opcional: Karp-Flatt para estimar la fracción serial.
-17. ⏳ Completar los campos **[PENDIENTE]** de los Problemas #5 y #6 y de la Sección 5.3 con los datos v2.
-18. Redactar conclusiones y recomendaciones de mejora, incluyendo la Bitácora. Mejora futura documentada: generador con saltos garantizados sin solapamiento (`xoshiro256**` con `jump`, Random123).
-19. Subir código (incluyendo la versión ingenua junto a la corregida y la carpeta `diagnostico/`), datos v1 y v2, gráficos y README al repositorio.
+15. ✅ Acceso y mecanismo de lanzamiento documentados (Sección 6). Script adaptado (lock de instancia única y tope por cuota; Problema #7). ✅ Corrida espejo ($M=3,5,10,50$, $P\le8$, 5 repeticiones, 800 filas) ejecutada, analizada y validada (Sección 6, Problemas #5 y #6). ✅ La fase B se realizó como Experimento 3 (Sección 6.3): barrido continuo $P=1\dots28$ y $N=10^4\dots10^9$. Opcionales no realizados: grilla reducida para $M\ne3$ y $N$ mayores que $10^9$.
+16. ✅ Notebook completado: agrupa por $(M,N,P)$, incluye `semilla`, speedup, eficiencia y convergencia, test de sesgo por $(M,N)$ para Mac y clúster, comparación `-O2` vs. `-O3`, Amdahl y Karp-Flatt (M = 3), comparación v1 vs. v2 y comparación Mac vs. clúster; se eliminaron las salidas viejas y se corrigieron las interpretaciones. Experimento 3 incorporado (Pasos A1 a A6): speedup, eficiencia, modelo del overhead, Karp-Flatt y validación estocástica del barrido.
+17. ✅ Campos pendientes de los Problemas #5, #6 y #7 y de la Sección 5.3 completados con los resultados de la Mac y del clúster.
+18. Redactar conclusiones y recomendaciones de mejora, incluyendo la Bitácora. Mejora futura documentada: generador con saltos garantizados sin solapamiento (`xoshiro256**` con `jump`, Random123). Mejora futura adicional: reparto ponderado o dinámico entre núcleos heterogéneos; con $S_8\approx3{,}8$ y reparto estático, un reparto proporcional a la velocidad de cada núcleo podría acercar $S_8$ a ≈ 5,9 (**estimación**, supone un E-core ≈ 2,1 veces más lento).
+19. Subir código (incluyendo la versión ingenua junto a la corregida y la carpeta `diagnostico/`), scripts (`run_experimento.sh`, `run_amdahl.sh`, `diagnostico_cluster.sh`), datos v1, v2 y `resultados_amdahl.csv`, gráficos y README al repositorio.
 20. (Opcional) Armar un PDF del proyecto a partir del README y la documentación generada.
 
 **Cronograma sugerido (7 días):**
@@ -382,7 +427,7 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 | 1 | Ítems 12 a 14: código final, prueba corta y barrido $M=3$ en Mac. |
 | 2 | Fase 2 en Mac ($M=5,10,50$) y actualización del notebook (ítem 16). |
 | 3 a 4 | Clúster: acceso, adaptación del script y corridas (ítem 15). |
-| 5 | Análisis y gráficos finales; completar los campos **[PENDIENTE]**. |
+| 5 | Análisis y gráficos finales (✅ completado). |
 | 6 | Informe, README y repositorio. |
 | 7 | Margen. |
 
@@ -407,5 +452,8 @@ Se compiló y ejecutó un programa mínimo que solo llama a `rand_r` (Problema #
 
 | Fecha | Cambio |
 |---|---|
+| 03/10/2026 | Experimento 3 (fase B) incorporado (Sección 6.3): barrido continuo $P=1\dots28$ en el clúster (504 corridas, 192 GB / 48 cores), $E_p\approx0{,}996$ con $N=10^9$, modelo del overhead (≈ 6 µs + 1,54 µs·$P$, $R^2=0{,}82$) y validación estocástica sin sesgo. Se actualizan las Secciones 5.2, 6, 9 y 10 (ítems 15, 16 y 19). |
+| 03/10/2026 | Resultados experimentales cerrados: test de sesgo por $(M,N)$ en Mac y clúster (Problema #5 cerrado; $t=-0{,}11$ y $-0{,}18$ con $M=3$, $N=10^9$), semillas únicas (Problema #6 cerrado), `-O3` sin mejora (se mantiene `-O2`; Sección 5.2), corrida espejo del clúster (eficiencia ≈ 0,998; $T_1\approx30{,}1$ s) y comparación cruzada (Sección 6). Se actualizan las Secciones 5.1, 5.2, 5.3, 6, 9 y 10 (ítems 14 a 17 completados). Se retira de la Sección 5.2 la cifra de 37-38 ns/iteración, no reproducible. |
+| 03/10/2026 | Resultados de la Mac v2 incorporados: escalado fuerte ($P=4$ óptimo, $S_4\approx S_8$ con $N=10^9$), convergencia del error sin plateau (Problema #5 y Sección 5.3), $T_1$ por $M$ verificado (Sección 6.2) y evidencia v2 del overhead (Sección 5.2). Diagnóstico del clúster documentado (nodo único, cuota 12 / garantía 6, EPYC 7B12; Sección 6) y nuevo Problema #7 (corridas superpuestas y sobresuscripción). Se actualizan las Secciones 8, 9 y 10 (ítems 14 a 18). |
 | 30/09/2026 | Ítems 12 a 14 de la Sección 10 actualizados (corridas $M=3,5,10,50$ y `-O3` ejecutadas en Mac; análisis pendiente). Agregada la justificación de `MPI_Barrier` (Sección 5.2) con la prueba con y sin barrera como requisito futuro no ejecutado; corregida la descripción de las limitaciones (orden de corridas, barrera) y los nombres de los CSV de la v2. |
 | 29/09/2026 | Fase 2 confirmada (Secciones 1, 2.2, 6.2, 12). Alcance reducido a Mac M1 + clúster: se descarta el experimento de la Sección 6.1 y se marcan como superados los Problemas #1 y #3. Nuevo Problema #5 (sesgo de `rand() % M`) y Problema #6 (semillas repetidas); se corrige la Sección 5.3, cuya conclusión anterior (agotamiento del período) queda reemplazada. Se reemplaza `rand()` por `splitmix64` y se actualizan Secciones 4, 5.2, 6 a 10 y 12. Se corrige la descripción del flujo (Sección 4.1): no hay segunda barrera y hay dos `MPI_Reduce`. |
