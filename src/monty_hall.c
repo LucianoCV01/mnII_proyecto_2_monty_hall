@@ -60,7 +60,10 @@ int main(int argc, char **argv) {
     int64_t iteraciones_locales = iteraciones_totales / n_procesos;
     if (id_proceso < (iteraciones_totales % n_procesos)) iteraciones_locales++;
 
+    #ifndef SIN_BARRERA
     MPI_Barrier(MPI_COMM_WORLD);
+    #endif
+
     double t_inicio = MPI_Wtime();
 
     int64_t vc_local = 0, vm_local = 0, vc_global = 0, vm_global = 0;
