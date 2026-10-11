@@ -88,8 +88,8 @@ if ! command -v mpicc >/dev/null 2>&1; then
     exit 1
 fi
 
-echo ">> Compilando $SRC con $OPT_FLAG"
-if ! mpicc "$OPT_FLAG" -Wall -o "$BIN_DIR/monty_hall" "$SRC" -lm; then
+echo ">> Compilando $SRC con $OPT_FLAG $CFLAGS_EXTRA"
+if ! mpicc "$OPT_FLAG" $CFLAGS_EXTRA -Wall -o "$BIN_DIR/monty_hall" "$SRC" -lm; then
     echo "ERROR: fallo la compilacion. Revisar $SRC antes de continuar."
     exit 1
 fi
