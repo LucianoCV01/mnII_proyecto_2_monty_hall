@@ -1,26 +1,44 @@
-# Proyecto 2 — Simulación de Probabilidad Colectiva (Monty Hall)
+# Proyecto 2 — Simulación de Monty Hall con MPI
 
-**Métodos Numéricos II - Computación Científica** — FACET, UNT
-**Evaluación Parcial 1 (HPC)**
+**Métodos Numéricos II – Computación Científica** — FACET, UNT
+**Evaluación Parcial 1 (HPC)** — Año [2026]
 
-Este repositorio contiene la implementación en **C y MPI** de una simulación de Monte Carlo para la Paradoja de Monty Hall. El proyecto demuestra el uso de Computación de Alta Performance (HPC) evaluando el rendimiento concurrente (Speedup) y resolviendo desafíos de portabilidad multiplataforma.
+> ### El informe está en la carpeta [`docs/`](docs/)
+> **[Informe_Monty_Hall.pdf](docs/Informe_Monty_Hall.pdf)** es el documento principal del trabajo: contiene la teoría, los métodos, los resultados y las conclusiones.
+> El resto del repositorio contiene el código y los datos que permiten reproducir lo que dice el informe.
 
-## 🗂️ Estructura del Proyecto
+## ¿Qué es este proyecto?
 
-- `/src`: Contiene el código fuente final y optimizado (`monty_hall.c`).
-- `/diagnostico`: Contiene las versiones previas del código (`/src`) utilizadas para evidenciar y aislar errores comunes en HPC (overflow de enteros y correlación de semillas), junto con sus resultados (`/resultados`). Las explicaciones de las fallas están documentadas como comentarios dentro del mismo código.
-- `/docs`: Documentación principal, incluyendo el Plan de Desarrollo y la Bitácora de Resolución de Problemas.
-- `/analysis`: Notebook de Python para la generación de gráficos empíricos vs teóricos y curvas de escalabilidad.
+Una simulación de Monte Carlo de la Paradoja de Monty Hall (con 3, 5, 10 y 50 puertas), escrita en **C con MPI**. Se la usó para comparar la frecuencia obtenida con la teoría y para medir el rendimiento (speedup y eficiencia) en distintos sistemas.
 
-## 🚀 Inicio Rápido (Compilación y Ejecución)
+Resultados principales (detalles en el informe):
+
+- Con mil millones de partidas, cambiar de puerta ganó en 0,666666 de los casos con 3 puertas (teoría: 0,666667).
+- En un nodo del clúster dado por la Facultad, el programa fue unas 28 veces más rápido con 28 procesos.
+
+## Cómo compilar y ejecutar
 
 ### Requisitos
-- Compilador de C (GCC)
-- Entorno MPI instalado (OpenMPI o MPICH)
 
-### 1. Compilar la versión final
-Para obtener el máximo rendimiento computacional, compilamos aplicando la bandera de optimización `-O3`:
+- Compilador de C (`gcc`)
+- MPI instalado (Open MPI o MPICH): comandos `mpicc` y `mpirun`
+- Python 3 
+
+### Compilar
 
 ```bash
-mpicc -O3 -Wall -o monty_hall src/monty_hall.c
+mkdir -p bin
+mpicc -O2 -Wall -o bin/monty_hall src/monty_hall.c -lm
+```
 
+### Ejecutar
+
+```bash
+mpirun -np 4 bin/monty_hall 100000000 3 12345
+```
+
+Los argumentos son, en orden: cantidad de partidas **N**, cantidad de puertas **M** y una **semilla** (opcional; si se omite, se genera una a partir del reloj). Con la misma semilla y el mismo número de procesos, el resultado se repite exactamente.
+
+El programa imprime una línea con los campos:
+
+`n_procesos, tiempo, N, M, victorias_cambiando, victorias_manteniendo, p_empirico, p_teorico, error_abs, semilla`
